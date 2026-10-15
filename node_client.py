@@ -10,9 +10,7 @@ import psutil
 import socket
 import threading
 import time
-import urllib.request
 
-# 1. Kiểm tra và tự nâng quyền Administrator an toàn
 def is_admin():
     try:
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
@@ -27,14 +25,12 @@ if not is_admin():
         else:
             exe_path = sys.executable
             args = f'"{os.path.abspath(__file__)}"'
-        
         ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe_path, args, None, 1)
         if ret > 32:
             sys.exit(0)
     except Exception:
         pass
 
-# 2. Thư viện đồ họa Windows
 import win32gui
 import win32ui
 import win32con
@@ -108,8 +104,6 @@ def kill_process_by_path(target_path):
     except Exception:
         pass
 
-# ==================== LUỒNG KẾT NỐI MẠNG ĐỊNH DANH QUA CLOUD ====================
-
 class ClientSignals(QObject):
     remote_command_received = pyqtSignal(str)
     connection_status_changed = pyqtSignal(str, str)
@@ -121,167 +115,107 @@ class ClientNetworkThread(threading.Thread):
         self.signals = signals
         self.running = True
 
-    def resolve_master_address(self, account_name):
-        """Tra cứu IP máy chính qua Cloud dweet.io theo tài khoản"""
-        try:
-            clean_user = account_name.strip().lower()
-            url = f"https://dweet.io/get/latest/dweet/for/mir4_{clean_user}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            res = urllib.request.urlopen(req, timeout=5).read().decode('utf-8')
-            data = json.loads(res)
-            
-            if data.get("this") == "succeeded":
-                items = data.get("with", [])
-                if items:
-                    content = items[0].get("content", {})
-                    lan_ip = content.get("lan_ip")
-                    wan_ip = content.get("wan_ip")
-                    port = int(content.get("port", 9999))
-                    return lan_ip, wan_ip, port
-        except Exception:
-            pass
-        return None, None, None
-
     def run(self):
         while self.running:
             cfg = self.main_app.config
             is_active = cfg.get("is_connected", False)
+            master_host = cfg.get("master_host", "").strip()
+            master_port = int(cfg.get("master_port", 9999))
             master_user = cfg.get("master_user", "").strip().lower()
             node_name = cfg.get("node_name", socket.gethostname()).strip()
 
-            if not is_active or not master_user:
+            if not is_active or not master_host or not master_user:
                 self.signals.connection_status_changed.emit("Chưa liên kết. Vui lòng bấm [LƯU VÀ KẾT NỐI]", "#888888")
                 time.sleep(2)
                 continue
 
-            self.signals.connection_status_changed.emit(f"Đang tìm máy chính [{master_user}]...", "#00e5ff")
-            lan_ip, wan_ip, master_port = self.resolve_master_address(master_user)
-
-            if not lan_ip and not wan_ip:
-                self.signals.connection_status_changed.emit(f"Không tìm thấy máy chính [{master_user}] Online", "#ffaa00")
-                time.sleep(5)
-                continue
-
             sock = None
-            connected = False
-            
-            # Thử kết nối LAN trước, nếu không được thử WAN
-            for target_ip in [lan_ip, wan_ip]:
-                if not target_ip:
-                    continue
-                try:
-                    self.signals.connection_status_changed.emit(f"Đang nối tới {target_ip}:{master_port}...", "#00e5ff")
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(4.0)
-                    sock.connect((target_ip, master_port))
-                    sock.settimeout(None)
-                    connected = True
-                    break
-                except Exception:
-                    if sock:
+            try:
+                self.signals.connection_status_changed.emit(f"Đang kết nối tới {master_host}:{master_port}...", "#00e5ff")
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5.0)
+                sock.connect((master_host, master_port))
+                sock.settimeout(None)
+
+                self.signals.connection_status_changed.emit(f"🟢 ĐÃ LIÊN KẾT: {master_user}", "#00e676")
+
+                def receive_worker(s):
+                    buf = ""
+                    while self.running:
                         try:
-                            sock.close()
+                            data = s.recv(1024).decode('utf-8')
+                            if not data:
+                                break
+                            buf += data
+                            while "\n" in buf:
+                                line, buf = buf.split("\n", 1)
+                                if line.strip():
+                                    cmd_obj = json.loads(line)
+                                    cmd = cmd_obj.get("command", "")
+                                    if cmd:
+                                        self.signals.remote_command_received.emit(cmd)
                         except Exception:
-                            pass
-                    sock = None
-
-            if not connected or sock is None:
-                self.signals.connection_status_changed.emit("🔴 MẤT KẾT NỐI (Thử lại sau 5s)", "#ff5252")
-                time.sleep(5)
-                continue
-
-            self.signals.connection_status_changed.emit(f"🟢 ĐÃ LIÊN KẾT: {master_user}", "#00e676")
-
-            def receive_worker(s):
-                buf = ""
-                while self.running:
-                    try:
-                        data = s.recv(1024).decode('utf-8')
-                        if not data:
                             break
-                        buf += data
-                        while "\n" in buf:
-                            line, buf = buf.split("\n", 1)
-                            if line.strip():
-                                cmd_obj = json.loads(line)
-                                cmd = cmd_obj.get("command", "")
-                                if cmd:
-                                    self.signals.remote_command_received.emit(cmd)
+
+                rcv_thread = threading.Thread(target=receive_worker, args=(sock,), daemon=True)
+                rcv_thread.start()
+
+                while self.running and rcv_thread.is_alive():
+                    if not self.main_app.config.get("is_connected", False):
+                        break
+                    qt_on = is_process_running_by_path(self.main_app.config.get("qt_path", ""))
+                    tinker_on = is_process_running_by_path(self.main_app.config.get("tinker_path", ""))
+
+                    payload = {
+                        "master_user": master_user,
+                        "node_name": node_name,
+                        "qt": qt_on,
+                        "tinker": tinker_on,
+                        "uptime": get_uptime_str()
+                    }
+                    try:
+                        sock.sendall((json.dumps(payload) + "\n").encode('utf-8'))
                     except Exception:
                         break
+                    time.sleep(3)
 
-            rcv_thread = threading.Thread(target=receive_worker, args=(sock,), daemon=True)
-            rcv_thread.start()
-
-            while self.running and rcv_thread.is_alive():
-                if not self.main_app.config.get("is_connected", False):
-                    break
-                qt_on = is_process_running_by_path(self.main_app.config.get("qt_path", ""))
-                tinker_on = is_process_running_by_path(self.main_app.config.get("tinker_path", ""))
-
-                payload = {
-                    "master_user": master_user,
-                    "node_name": node_name,
-                    "qt": qt_on,
-                    "tinker": tinker_on,
-                    "uptime": get_uptime_str()
-                }
-                try:
-                    sock.sendall((json.dumps(payload) + "\n").encode('utf-8'))
-                except Exception:
-                    break
-                time.sleep(3)
-
-            if sock:
-                try:
-                    sock.close()
-                except Exception:
-                    pass
-            time.sleep(5)
-
-# ==================== MODULE MIR4 WALL MANAGER ====================
+            except Exception:
+                self.signals.connection_status_changed.emit("🔴 MẤT KẾT NỐI (Thử lại sau 5s)", "#ff5252")
+            finally:
+                if sock:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                time.sleep(5)
 
 def capture_window_pixmap(hwnd, target_w, target_h):
     try:
         if not win32gui.IsWindow(hwnd):
             return None
-
         cl_left, cl_top, cl_right, cl_bot = win32gui.GetClientRect(hwnd)
         w = cl_right - cl_left
         h = cl_bot - cl_top
-
-        if w <= 0 or h <= 0:
-            rect = win32gui.GetWindowRect(hwnd)
-            w = rect[2] - rect[0]
-            h = rect[3] - rect[1]
-
         if w <= 0 or h <= 0:
             return None
-
         hwndDC = win32gui.GetWindowDC(hwnd)
         mfcDC = win32ui.CreateDCFromHandle(hwndDC)
         saveDC = mfcDC.CreateCompatibleDC()
-
         saveBitMap = win32ui.CreateBitmap()
         saveBitMap.CreateCompatibleBitmap(mfcDC, w, h)
         saveDC.SelectObject(saveBitMap)
-
         res = ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 2)
         if res == 0:
             res = ctypes.windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 0)
             if res == 0:
                 saveDC.BitBlt((0, 0), (w, h), mfcDC, (0, 0), win32con.SRCCOPY)
-
         bmpinfo = saveBitMap.GetInfo()
         bmpstr = saveBitMap.GetBitmapBits(True)
-
         img = QImage(bmpstr, bmpinfo['bmWidth'], bmpinfo['bmHeight'], QImage.Format_ARGB32)
-
         win32gui.DeleteObject(saveBitMap.GetHandle())
         saveDC.DeleteDC()
         mfcDC.DeleteDC()
         win32gui.ReleaseDC(hwnd, hwndDC)
-
         pixmap = QPixmap.fromImage(img)
         return pixmap.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.FastTransformation)
     except Exception:
@@ -296,17 +230,10 @@ class ThumbnailCard(QFrame):
         self.target_w = 320
         self.target_h = 180
         self.current_pixmap = None
-
         self.setFrameShape(QFrame.StyledPanel)
         self.setStyleSheet("""
-            ThumbnailCard {
-                background-color: #000000;
-                border: 2px solid #38383e;
-                border-radius: 4px;
-            }
-            ThumbnailCard:hover {
-                border: 2px solid #ff7b00;
-            }
+            ThumbnailCard { background-color: #000; border: 2px solid #38383e; border-radius: 4px; }
+            ThumbnailCard:hover { border: 2px solid #ff7b00; }
         """)
 
     def set_card_size(self, width, height):
@@ -331,26 +258,12 @@ class ThumbnailCard(QFrame):
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.activate_window()
-
-    def activate_window(self):
-        try:
-            if win32gui.IsWindow(self.hwnd):
-                win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
-                user32 = ctypes.windll.user32
-                current_thread = ctypes.windll.kernel32.GetCurrentThreadId()
-                window_thread = user32.GetWindowThreadProcessId(self.hwnd, None)
-                user32.AttachThreadInput(current_thread, window_thread, True)
-                win32gui.SetForegroundWindow(self.hwnd)
-                win32gui.BringWindowToTop(self.hwnd)
-                user32.AttachThreadInput(current_thread, window_thread, False)
-        except Exception:
             try:
-                win32gui.SetForegroundWindow(self.hwnd)
+                if win32gui.IsWindow(self.hwnd):
+                    win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
+                    win32gui.SetForegroundWindow(self.hwnd)
             except Exception:
                 pass
-
-# ==================== CỬA SỔ CHÍNH MÁY CON ====================
 
 class MasterApp(QMainWindow):
     def __init__(self):
@@ -385,6 +298,8 @@ class MasterApp(QMainWindow):
             "auto_start_apps": True,
             "auto_restart_crash": True,
             "delay_seconds": 2,
+            "master_host": "127.0.0.1",
+            "master_port": 9999,
             "master_user": "",
             "node_name": socket.gethostname(),
             "is_connected": False
@@ -434,7 +349,7 @@ class MasterApp(QMainWindow):
 
         self.tabs = QTabWidget()
 
-        # TAB 1: QUẢN LÝ AUTO (QT & TINKER)
+        # TAB 1: QUẢN LÝ AUTO
         tab_boot = QWidget()
         tab_boot_layout = QVBoxLayout(tab_boot)
         tab_boot_layout.setContentsMargins(20, 15, 20, 15)
@@ -448,7 +363,7 @@ class MasterApp(QMainWindow):
         net_box_layout.setSpacing(10)
 
         h_net_title = QHBoxLayout()
-        lbl_net = QLabel("📡 KẾT NỐI MÁY CHÍNH (KHÔNG CẦN CHUNG MẠNG LAN):")
+        lbl_net = QLabel("📡 KẾT NỐI MÁY CHÍNH (ĐIỀU KHIỂN & ĐỒNG BỘ):")
         lbl_net.setStyleSheet("border: none; font-weight: bold; color: #ff944d; font-size: 13px;")
         h_net_title.addWidget(lbl_net)
 
@@ -459,21 +374,31 @@ class MasterApp(QMainWindow):
         net_box_layout.addLayout(h_net_title)
 
         h_net_inputs = QHBoxLayout()
-        h_net_inputs.setSpacing(12)
+        h_net_inputs.setSpacing(10)
 
+        # 1. IP hoặc Hostname Máy chính
+        h_net_inputs.addWidget(QLabel("IP Máy Chính:"))
+        self.txt_master_host = QLineEdit(self.config.get("master_host", "127.0.0.1"))
+        self.txt_master_host.setPlaceholderText("VD: 192.168.1.100 hoặc IP Tailscale")
+        self.txt_master_host.setStyleSheet("background-color: #242429; color: #ffffff; border: 1px solid #555; border-radius: 4px; padding: 6px;")
+        h_net_inputs.addWidget(self.txt_master_host)
+
+        # 2. Tài khoản quản trị
         h_net_inputs.addWidget(QLabel("Tài Khoản Quản Trị:"))
         self.txt_master_user = QLineEdit(self.config.get("master_user", ""))
-        self.txt_master_user.setPlaceholderText("VD: ongchumir4")
+        self.txt_master_user.setPlaceholderText("VD: mir4hung01")
         self.txt_master_user.setStyleSheet("background-color: #242429; color: #00e676; font-weight: bold; border: 1px solid #555; border-radius: 4px; padding: 6px;")
         h_net_inputs.addWidget(self.txt_master_user)
 
+        # 3. Tên máy con
         h_net_inputs.addWidget(QLabel("Tên Máy Con:"))
         self.txt_node_name = QLineEdit(self.config.get("node_name", socket.gethostname()))
-        self.txt_node_name.setPlaceholderText("VD: PCHUNG001")
+        self.txt_node_name.setPlaceholderText("VD: PCHUNG002")
         self.txt_node_name.setStyleSheet("background-color: #242429; color: #00e5ff; font-weight: bold; border: 1px solid #555; border-radius: 4px; padding: 6px;")
         h_net_inputs.addWidget(self.txt_node_name)
 
-        self.btn_save_connect = QPushButton("💾 LƯU VÀ KẾT NỐI")
+        # Nút Lưu và Kết nối
+        self.btn_save_connect = QPushButton("💾 LƯU & KẾT NỐI")
         self.btn_save_connect.setFixedHeight(34)
         self.btn_save_connect.setStyleSheet("""
             QPushButton { background-color: #2e7d32; color: #ffffff; font-weight: bold; padding: 0 16px; border-radius: 4px; }
@@ -556,6 +481,7 @@ class MasterApp(QMainWindow):
 
         tab_boot_layout.addWidget(boot_box)
 
+        # Checkbox tùy chọn
         opts_layout = QVBoxLayout()
         opts_layout.setSpacing(8)
 
@@ -694,7 +620,7 @@ class MasterApp(QMainWindow):
         self.tabs.addTab(tab_wall, "🖥️ BỨC TƯỜNG GAME (MIR4 WALL)")
         main_layout.addWidget(self.tabs, 1)
 
-        # BANNER QUẢNG CÁO
+        # FOOTER QUẢNG CÁO & BẢN QUYỀN
         self.ad_banner = QFrame()
         self.ad_banner.setFixedHeight(72)
         self.ad_banner.setStyleSheet("""
@@ -739,17 +665,19 @@ class MasterApp(QMainWindow):
         main_layout.addWidget(self.ad_banner)
 
     def on_save_and_connect_clicked(self):
+        host = self.txt_master_host.text().strip()
         user = self.txt_master_user.text().strip().lower()
         node = self.txt_node_name.text().strip()
-        if not user or not node:
-            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập đầy đủ Tài khoản máy chính và Tên máy con!")
+        if not host or not user or not node:
+            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập IP Máy Chính, Tài khoản và Tên máy con!")
             return
 
+        self.config["master_host"] = host
         self.config["master_user"] = user
         self.config["node_name"] = node
         self.config["is_connected"] = True
         self.save_settings()
-        QMessageBox.information(self, "Đã lưu", f"Đã lưu thông tin cấu hình!\nHệ thống đang tự động tìm kiếm máy chính [{user}] qua Cloud...")
+        QMessageBox.information(self, "Đã lưu", f"Đã lưu cấu hình!\nĐang tiến hành kết nối tới {host}:9999...")
 
     def on_net_status_change(self, text, color):
         self.lbl_net_status.setText(text)
@@ -921,6 +849,9 @@ class MasterApp(QMainWindow):
             self.config["tinker_path"] = self.txt_tinker.text().strip()
             self.config["auto_start_apps"] = self.chk_auto_launch_tools.isChecked()
             self.config["auto_restart_crash"] = self.chk_auto_restart.isChecked()
+            self.config["master_host"] = self.txt_master_host.text().strip()
+            self.config["master_user"] = self.txt_master_user.text().strip().lower()
+            self.config["node_name"] = self.txt_node_name.text().strip()
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=4)
         except Exception:
@@ -993,7 +924,7 @@ class MasterApp(QMainWindow):
             results.append("Đường dẫn QT chưa hợp lệ.")
 
         self.btn_launch_both.setEnabled(False)
-        self.status_boot_label.setText("Đã kích hoạt QT. Đang chờ 30s để bật TINKER...")
+        self.status_boot_label.setText("Đã kích hoạt QT. Đang chờ 30 giây để bật TINKER...")
 
         def run_second_app():
             self.btn_launch_both.setEnabled(True)
@@ -1015,7 +946,7 @@ class MasterApp(QMainWindow):
         current_status = "\n".join(results)
         self.show_alert(
             "Tiến trình bắt đầu", 
-            f"{current_status}\n\n-> Hệ thống sẽ tự động bật TINKER sau đúng 30s nữa!"
+            f"{current_status}\n\n-> Hệ thống sẽ tự động bật TINKER sau đúng 30 giây nữa!"
         )
         QTimer.singleShot(30000, run_second_app)
 
@@ -1025,14 +956,14 @@ class MasterApp(QMainWindow):
 
         if qt_path and os.path.exists(qt_path) and not is_process_running_by_path(qt_path):
             self.execute_binary(qt_path)
-            self.status_boot_label.setText("Đã bật QT. Đang đếm lùi 30s để bật TINKER...")
+            self.status_boot_label.setText("Đã bật QT. Đang đếm lùi 30 giây để bật TINKER...")
         else:
-            self.status_boot_label.setText("QT đã hoạt động. Đang chờ 30s để kiểm tra TINKER...")
+            self.status_boot_label.setText("QT đã hoạt động. Đang chờ 30 giây để kiểm tra TINKER...")
 
         def start_tinker():
             if tinker_path and os.path.exists(tinker_path) and not is_process_running_by_path(tinker_path):
                 self.execute_binary(tinker_path)
-                self.status_boot_label.setText("Đã tự động khởi chạy TINKER sau 30s!")
+                self.status_boot_label.setText("Đã tự động khởi chạy TINKER sau 30 giây!")
             self.check_app_status_ui()
 
         QTimer.singleShot(30000, start_tinker)
@@ -1043,91 +974,4 @@ class MasterApp(QMainWindow):
             self.status_qt_badge.setText("🟢 ĐANG CHẠY (ONLINE)")
             self.status_qt_badge.setStyleSheet("border: none; font-size: 11px; font-weight: bold; color: #00e676;")
         else:
-            self.status_qt_badge.setText("🔴 ĐÃ DỪNG (OFFLINE)")
-            self.status_qt_badge.setStyleSheet("border: none; font-size: 11px; font-weight: bold; color: #ff5252;")
-
-        tinker_running = is_process_running_by_path(self.txt_tinker.text().strip())
-        if tinker_running:
-            self.status_tinker_badge.setText("🟢 ĐANG CHẠY (ONLINE)")
-            self.status_tinker_badge.setStyleSheet("border: none; font-size: 11px; font-weight: bold; color: #00e676;")
-        else:
-            self.status_tinker_badge.setText("🔴 ĐÃ DỪNG (OFFLINE)")
-            self.status_tinker_badge.setStyleSheet("border: none; font-size: 11px; font-weight: bold; color: #ff5252;")
-
-        return qt_running, tinker_running
-
-    def check_and_recover_apps(self):
-        qt_path = self.txt_qt.text().strip()
-        tinker_path = self.txt_tinker.text().strip()
-
-        qt_on, tinker_on = self.check_app_status_ui()
-
-        if not self.chk_auto_restart.isChecked():
-            return
-
-        if qt_path and os.path.exists(qt_path) and not qt_on:
-            self.status_boot_label.setText("Phát hiện QT bị tắt! Đang tự động bật lại...")
-            self.execute_binary(qt_path)
-
-        if tinker_path and os.path.exists(tinker_path) and not tinker_on:
-            self.status_boot_label.setText("Phát hiện TINKER bị tắt! Đang tự động bật lại...")
-            self.execute_binary(tinker_path)
-
-    # ================= KHỞI ĐỘNG CÙNG WINDOWS =================
-
-    def get_startup_shortcut_path(self):
-        startup_dir = os.path.join(os.environ["APPDATA"], r"Microsoft\Windows\Start Menu\Programs\Startup")
-        return os.path.join(startup_dir, "Mir4_Master_Hub.bat")
-
-    def is_startup_enabled(self):
-        if os.path.exists(self.get_startup_shortcut_path()):
-            return True
-        try:
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_READ)
-            winreg.QueryValueEx(key, REG_APP_NAME)
-            winreg.CloseKey(key)
-            return True
-        except Exception:
-            return False
-
-    def toggle_startup(self, state):
-        exe_path = get_current_exe_path()
-        bat_file = self.get_startup_shortcut_path()
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-
-        if state == Qt.Checked:
-            try:
-                with open(bat_file, "w", encoding="utf-8") as f:
-                    f.write(f'@echo off\nstart "" "{exe_path}"\n')
-            except Exception:
-                pass
-
-            try:
-                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
-                winreg.SetValueEx(key, REG_APP_NAME, 0, winreg.REG_SZ, f'"{exe_path}"')
-                winreg.CloseKey(key)
-            except Exception:
-                pass
-
-            self.status_boot_label.setText("Đã kích hoạt tự khởi động Hub cùng Windows.")
-        else:
-            if os.path.exists(bat_file):
-                try:
-                    os.remove(bat_file)
-                except Exception:
-                    pass
-
-            try:
-                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
-                winreg.DeleteValue(key, REG_APP_NAME)
-                winreg.CloseKey(key)
-            except Exception:
-                pass
-
-            self.status_boot_label.setText("Đã tắt tự khởi động APP cùng Windows.")
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = MasterApp()
-    window.show()
-    sys.exit(app.exec_())
+            self

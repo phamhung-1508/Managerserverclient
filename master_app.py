@@ -11,7 +11,6 @@ import ctypes
 import urllib.request
 from datetime import datetime
 
-# 1. TỰ ĐỘNG NÂNG QUYỀN ADMINISTRATOR
 def is_admin():
     try:
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
@@ -32,7 +31,6 @@ if not is_admin():
     except Exception:
         pass
 
-# 2. TỰ ĐỘNG MỞ PORT WINDOWS DEFENDER FIREWALL
 def setup_windows_firewall(port=9999):
     rule_name = "Mir4_Master_Socket_Server"
     try:
@@ -49,39 +47,23 @@ def setup_windows_firewall(port=9999):
     except Exception:
         pass
 
-# 3. ĐĂNG KÝ ĐỊA CHỈ MÁY CHÍNH LÊN CLOUD DWEET.IO
-def publish_master_address(account_name, port=9999):
-    def worker():
-        while True:
-            try:
-                # Lấy IP mạng LAN nội bộ
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.connect(("8.8.8.8", 80))
-                lan_ip = s.getsockname()[0]
-                s.close()
-            except Exception:
-                lan_ip = "127.0.0.1"
+def get_machine_ips():
+    lan_ip = "127.0.0.1"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        lan_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
 
-            wan_ip = ""
-            try:
-                # Lấy IP Public Internet
-                req_ip = urllib.request.Request('https://api.ipify.org', headers={'User-Agent': 'Mozilla/5.0'})
-                wan_ip = urllib.request.urlopen(req_ip, timeout=5).read().decode('utf8').strip()
-            except Exception:
-                pass
-
-            try:
-                clean_user = account_name.strip().lower()
-                url = f"https://dweet.io/dweet/for/mir4_{clean_user}?lan_ip={lan_ip}&wan_ip={wan_ip}&port={port}"
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                urllib.request.urlopen(req, timeout=5)
-            except Exception:
-                pass
-
-            threading.Event().wait(15)
-
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
+    wan_ip = ""
+    try:
+        req = urllib.request.Request("https://api.ipify.org", headers={'User-Agent': 'Mozilla/5.0'})
+        wan_ip = urllib.request.urlopen(req, timeout=3).read().decode('utf8').strip()
+    except Exception:
+        pass
+    return lan_ip, wan_ip
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -269,7 +251,7 @@ class MasterAppWindow(QMainWindow):
         self.server = MasterServer(self.username, self.signals)
         self.server.start()
 
-        publish_master_address(self.username, SERVER_PORT)
+        self.lan_ip, self.wan_ip = get_machine_ips()
         self.init_ui()
 
     def init_ui(self):
@@ -297,7 +279,7 @@ class MasterAppWindow(QMainWindow):
         ad_title.setStyleSheet("color: #000000;")
         ad_title.setAlignment(Qt.AlignCenter)
         
-        ad_sub = QLabel("Hỗ trợ đồng bộ đa máy con qua Internet | Zalo Support: 0392771558")
+        ad_sub = QLabel("Hỗ trợ đồng bộ đa máy con qua LAN/Internet | Zalo: 0392771558")
         ad_sub.setFont(QFont("Segoe UI", 9, QFont.DemiBold))
         ad_sub.setStyleSheet("color: #111111;")
         ad_sub.setAlignment(Qt.AlignCenter)
@@ -306,9 +288,13 @@ class MasterAppWindow(QMainWindow):
         ad_layout.addWidget(ad_sub)
         layout.addWidget(ad_banner)
 
-        # THANH THÔNG TIN VÀ KHỞI ĐỘNG CÙNG WINDOWS
+        # THANH THÔNG TIN VÀ ĐỊA CHỈ IP
         top_bar = QHBoxLayout()
-        user_lbl = QLabel(f"Tài khoản quản trị: <b><font color='#00e676'>{self.username}</font></b> | Cloud Sync: <b><font color='#ffd700'>SẴN SÀNG TOÀN CẦU</font></b>")
+        ip_info = f"LAN: <font color='#00e676'><b>{self.lan_ip}</b></font>"
+        if self.wan_ip:
+            ip_info += f" | WAN: <font color='#00e5ff'><b>{self.wan_ip}</b></font>"
+
+        user_lbl = QLabel(f"Tài khoản quản trị: <b><font color='#ffd700'>{self.username}</font></b> | IP Máy Chính ({ip_info}) | Port: <b>9999</b>")
         user_lbl.setFont(QFont("Segoe UI", 10))
         top_bar.addWidget(user_lbl)
 
@@ -351,7 +337,7 @@ class MasterAppWindow(QMainWindow):
         """)
         layout.addWidget(self.table)
 
-        # KHUNG ĐIỀU KHIỂN HÀNG LOẠT
+        # THANH NÚT ĐIỀU KHIỂN
         ctrl_bar = QHBoxLayout()
 
         btn_style_green = "background-color: #2e7d32; color: #fff; font-weight: bold; padding: 8px 12px; border-radius: 4px;"

@@ -30,19 +30,18 @@ jobs:
         New-Item -ItemType Directory -Force -Path "tailscale_bin"
         New-Item -ItemType Directory -Force -Path "ts_temp"
         
-        Write-Host "Downloading Tailscale MSI..."
+        Write-Host "Dang tai Tailscale MSI tu may chu..."
         Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-1.104.1-amd64.msi" -OutFile "ts_temp/tailscale.msi"
         
-        Write-Host "Extracting Tailscale MSI..."
+        Write-Host "Dang trich xuat 3 file loi..."
         Start-Process msiexec.exe -ArgumentList "/a ts_temp\tailscale.msi /qb TARGETDIR=$PWD\ts_temp\extracted" -Wait
         
-        # Tìm và copy 3 file cốt lõi vào thư mục tailscale_bin
         $extractedPath = Get-ChildItem -Path "ts_temp\extracted" -Recurse -Filter "tailscaled.exe" | Select-Object -First 1 -ExpandProperty DirectoryName
         Copy-Item "$extractedPath\tailscale.exe" -Destination "tailscale_bin\"
         Copy-Item "$extractedPath\tailscaled.exe" -Destination "tailscale_bin\"
         Copy-Item "$extractedPath\wintun.dll" -Destination "tailscale_bin\"
         
-        Write-Host "Tailscale files ready in tailscale_bin:"
+        Write-Host "Cac file Tailscale da san sang trong tailscale_bin:"
         Get-ChildItem "tailscale_bin"
 
     - name: Build Master App EXE

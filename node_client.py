@@ -11,7 +11,8 @@ import socket
 import threading
 import time
 
-# 1. TỰ NÂNG QUYỀN ADMINISTRATOR AN TOÀN
+from embedded_tailscale import EmbeddedTailscale
+
 def run_as_admin():
     try:
         if ctypes.windll.shell32.IsUserAnAdmin():
@@ -28,7 +29,6 @@ def run_as_admin():
 
 run_as_admin()
 
-# 2. THƯ VIỆN ĐỒ HỌA WINDOWS
 import win32gui
 import win32ui
 import win32con
@@ -94,8 +94,6 @@ def kill_process_by_path(target_path):
     except Exception:
         pass
 
-# ==================== LUỒNG KẾT NỐI SOCKET TCP ====================
-
 class ClientSignals(QObject):
     remote_command_received = pyqtSignal(str)
     connection_status_changed = pyqtSignal(str, str)
@@ -139,7 +137,7 @@ class ClientNetworkThread(threading.Thread):
                             if not data:
                                 break
                             buf += data
-                            while "\n" in buf:
+                            while "\n" in buffer:
                                 line, buf = buf.split("\n", 1)
                                 if line.strip():
                                     cmd_obj = json.loads(line)
@@ -180,8 +178,6 @@ class ClientNetworkThread(threading.Thread):
                     except Exception:
                         pass
                 time.sleep(5)
-
-# ==================== MODULE MIR4 WALL MANAGER ====================
 
 def capture_window_pixmap(hwnd, target_w, target_h):
     try:
@@ -292,8 +288,6 @@ class ThumbnailCard(QFrame):
             except Exception:
                 pass
 
-# ==================== CỬA SỔ CHÍNH MÁY CON ====================
-
 class MasterApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -327,13 +321,17 @@ class MasterApp(QMainWindow):
             "auto_start_apps": True,
             "auto_restart_crash": True,
             "delay_seconds": 2,
-            "master_host": "192.168.1.3",
+            "master_host": "",
             "master_port": 9999,
-            "master_user": "11111",
+            "master_user": "",
             "node_name": socket.gethostname(),
             "is_connected": False
         }
         self.load_config()
+
+        # TỰ ĐỘNG CHẠY TAILSCALE NGẦM TRÊN MÁY CON
+        self.ts = EmbeddedTailscale()
+        threading.Thread(target=self.ts.start_and_connect, daemon=True).start()
 
         self.current_cols = 4
         self.cards = {}
@@ -396,7 +394,7 @@ class MasterApp(QMainWindow):
         lbl_net.setStyleSheet("border: none; font-weight: bold; color: #ff944d; font-size: 13px;")
         h_net_title.addWidget(lbl_net)
 
-        self.lbl_net_status = QLabel("⚪ Chưa liên kết")
+        self.lbl_net_status = QLabel("⚪ Đang khởi động mạng ảo VPN ngầm...")
         self.lbl_net_status.setStyleSheet("border: none; font-weight: bold; font-size: 12px; color: #888888;")
         h_net_title.addWidget(self.lbl_net_status)
         h_net_title.addStretch()
@@ -406,23 +404,23 @@ class MasterApp(QMainWindow):
         h_net_inputs.setSpacing(10)
 
         # 1. IP Máy chính
-        h_net_inputs.addWidget(QLabel("IP Máy Chính:"))
-        self.txt_master_host = QLineEdit(self.config.get("master_host", "192.168.1.3"))
-        self.txt_master_host.setPlaceholderText("VD: 192.168.1.3")
+        h_net_inputs.addWidget(QLabel("IP Máy Chính (VPN):"))
+        self.txt_master_host = QLineEdit(self.config.get("master_host", ""))
+        self.txt_master_host.setPlaceholderText("VD: 100.x.y.z")
         self.txt_master_host.setStyleSheet("background-color: #242429; color: #ffffff; border: 1px solid #555; border-radius: 4px; padding: 6px;")
         h_net_inputs.addWidget(self.txt_master_host)
 
         # 2. Tài khoản quản trị
         h_net_inputs.addWidget(QLabel("Tài Khoản Quản Trị:"))
-        self.txt_master_user = QLineEdit(self.config.get("master_user", "11111"))
-        self.txt_master_user.setPlaceholderText("VD: 11111")
+        self.txt_master_user = QLineEdit(self.config.get("master_user", ""))
+        self.txt_master_user.setPlaceholderText("VD: admin")
         self.txt_master_user.setStyleSheet("background-color: #242429; color: #00e676; font-weight: bold; border: 1px solid #555; border-radius: 4px; padding: 6px;")
         h_net_inputs.addWidget(self.txt_master_user)
 
         # 3. Tên máy con
         h_net_inputs.addWidget(QLabel("Tên Máy Con:"))
         self.txt_node_name = QLineEdit(self.config.get("node_name", socket.gethostname()))
-        self.txt_node_name.setPlaceholderText("VD: PCCHINH01")
+        self.txt_node_name.setPlaceholderText("VD: PC01")
         self.txt_node_name.setStyleSheet("background-color: #242429; color: #00e5ff; font-weight: bold; border: 1px solid #555; border-radius: 4px; padding: 6px;")
         h_net_inputs.addWidget(self.txt_node_name)
 
@@ -649,7 +647,7 @@ class MasterApp(QMainWindow):
         self.tabs.addTab(tab_wall, "🖥️ BỨC TƯỜNG GAME (MIR4 WALL)")
         main_layout.addWidget(self.tabs, 1)
 
-        # BANNER QUẢNG CÁO & BẢN QUYỀN
+        # BANNER BẢN QUYỀN
         self.ad_banner = QFrame()
         self.ad_banner.setFixedHeight(72)
         self.ad_banner.setStyleSheet("""
@@ -693,8 +691,6 @@ class MasterApp(QMainWindow):
         ad_layout.addWidget(gold_badge)
         main_layout.addWidget(self.ad_banner)
 
-    # ================= CÁC HÀM XỬ LÝ SỰ KIỆN =================
-
     def on_save_and_connect_clicked(self):
         host = self.txt_master_host.text().strip()
         user = self.txt_master_user.text().strip().lower()
@@ -708,7 +704,7 @@ class MasterApp(QMainWindow):
         self.config["node_name"] = node
         self.config["is_connected"] = True
         self.save_settings()
-        QMessageBox.information(self, "Đã lưu", f"Đã lưu cấu hình!\nĐang tiến hành kết nối tới {host}:9999...")
+        QMessageBox.information(self, "Đã lưu", f"Đã lưu cấu hình kết nối!\nĐang liên kết tới máy chủ {host}:9999...")
 
     def on_net_status_change(self, text, color):
         self.lbl_net_status.setText(text)

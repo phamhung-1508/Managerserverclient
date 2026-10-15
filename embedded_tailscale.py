@@ -4,8 +4,8 @@ import subprocess
 import time
 import shutil
 
-# Auth Key chính thức của bạn
-DEFAULT_AUTH_KEY = "tskey-auth-koCTbXbcdK11CNTRL-YB1pmzPPup2VM6THRFkLq2cyXCUNrnCd"
+# Auth Key có gắn thẻ Tag tag:server (Node vĩnh viễn không hết hạn kết nối)
+DEFAULT_AUTH_KEY = "tskey-auth-kW2XejLBFX11CNTRL-fc2htAM1fCFixWAK76pPDFP5ivhQ7Rkx"
 
 def get_bundle_dir():
     """Lấy đường dẫn thư mục giải nén tạm thời khi chạy file PyInstaller --onefile"""

@@ -11,6 +11,8 @@ import ctypes
 import urllib.request
 from datetime import datetime
 
+from embedded_tailscale import EmbeddedTailscale
+
 def is_admin():
     try:
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
@@ -47,7 +49,7 @@ def setup_windows_firewall(port=9999):
     except Exception:
         pass
 
-def get_machine_ips():
+def get_machine_ips(ts_client=None):
     lan_ip = "127.0.0.1"
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -57,13 +59,17 @@ def get_machine_ips():
     except Exception:
         pass
 
+    vpn_ip = ""
+    if ts_client:
+        vpn_ip = ts_client.get_my_ip()
+
     wan_ip = ""
     try:
         req = urllib.request.Request("https://api.ipify.org", headers={'User-Agent': 'Mozilla/5.0'})
         wan_ip = urllib.request.urlopen(req, timeout=3).read().decode('utf8').strip()
     except Exception:
         pass
-    return lan_ip, wan_ip
+    return lan_ip, vpn_ip, wan_ip
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -77,6 +83,7 @@ from PyQt5.QtGui import QFont, QColor, QIcon
 SERVER_PORT = 9999
 DB_NAME = "master_users.db"
 APP_NAME = "Mir4MasterManager"
+PREF_FILE = "login_pref.json"
 
 def get_app_dir():
     if getattr(sys, 'frozen', False):
@@ -101,7 +108,7 @@ def hash_pw(password):
 
 def register_user(username, password):
     if not username or not password:
-        return False, "Tài khoản và mật khẩu không được rỗng!"
+        return False, "Tài khoản và mật khẩu không được để trống!"
     db_path = os.path.join(get_app_dir(), DB_NAME)
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
@@ -251,7 +258,9 @@ class MasterAppWindow(QMainWindow):
         self.server = MasterServer(self.username, self.signals)
         self.server.start()
 
-        self.lan_ip, self.wan_ip = get_machine_ips()
+        self.ts = EmbeddedTailscale()
+        self.ts.start_and_connect()
+        self.lan_ip, self.vpn_ip, self.wan_ip = get_machine_ips(self.ts)
         self.init_ui()
 
     def init_ui(self):
@@ -288,9 +297,11 @@ class MasterAppWindow(QMainWindow):
         ad_layout.addWidget(ad_sub)
         layout.addWidget(ad_banner)
 
-        # THANH THÔNG TIN VÀ ĐỊA CHỈ IP
+        # THANH THÔNG TIN IP
         top_bar = QHBoxLayout()
         ip_info = f"LAN: <font color='#00e676'><b>{self.lan_ip}</b></font>"
+        if self.vpn_ip:
+            ip_info += f" | VPN TAILSCALE: <font color='#ffeb3b'><b>{self.vpn_ip}</b></font>"
         if self.wan_ip:
             ip_info += f" | WAN: <font color='#00e5ff'><b>{self.wan_ip}</b></font>"
 
@@ -489,11 +500,13 @@ class MasterAppWindow(QMainWindow):
 class LoginWindow(QWidget):
     def __init__(self):
         super().__init__()
+        self.pref_path = os.path.join(get_app_dir(), PREF_FILE)
         self.init_ui()
+        self.load_remembered_credentials()
 
     def init_ui(self):
         self.setWindowTitle("Đăng Nhập Quản Trị Mir4")
-        self.resize(360, 320)
+        self.resize(360, 360)
         self.setStyleSheet("background-color: #121214; color: #ffffff; font-family: 'Segoe UI';")
 
         if os.path.exists("app_icon.ico"):
@@ -518,8 +531,13 @@ class LoginWindow(QWidget):
         self.txt_pass.setStyleSheet("padding: 8px; border-radius: 4px; background: #24242c; color: #fff;")
         layout.addWidget(self.txt_pass)
 
+        # TÍNH NĂNG GHI NHỚ TÀI KHOẢN
+        self.chk_remember = QCheckBox("Ghi nhớ tài khoản cho lần sau")
+        self.chk_remember.setStyleSheet("color: #00e5ff; font-weight: bold; margin-top: 4px;")
+        layout.addWidget(self.chk_remember)
+
         self.btn_login = QPushButton("Đăng Nhập")
-        self.btn_login.setStyleSheet("background-color: #ff6600; color: #fff; font-weight: bold; padding: 10px; border-radius: 4px;")
+        self.btn_login.setStyleSheet("background-color: #ff6600; color: #fff; font-weight: bold; padding: 10px; border-radius: 4px; margin-top: 6px;")
         self.btn_login.clicked.connect(self.handle_login)
         layout.addWidget(self.btn_login)
 
@@ -528,10 +546,42 @@ class LoginWindow(QWidget):
         self.btn_register.clicked.connect(self.handle_register)
         layout.addWidget(self.btn_register)
 
+    def load_remembered_credentials(self):
+        if os.path.exists(self.pref_path):
+            try:
+                with open(self.pref_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if data.get("remember", False):
+                        self.txt_user.setText(data.get("username", ""))
+                        self.txt_pass.setText(data.get("password", ""))
+                        self.chk_remember.setChecked(True)
+            except Exception:
+                pass
+
+    def save_credentials(self, username, password, remember):
+        try:
+            if remember:
+                payload = {
+                    "remember": True,
+                    "username": username,
+                    "password": password
+                }
+            else:
+                payload = {
+                    "remember": False,
+                    "username": "",
+                    "password": ""
+                }
+            with open(self.pref_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=4)
+        except Exception:
+            pass
+
     def handle_login(self):
         u = self.txt_user.text().strip().lower()
         p = self.txt_pass.text().strip()
         if authenticate_user(u, p):
+            self.save_credentials(u, p, self.chk_remember.isChecked())
             self.master_win = MasterAppWindow(u)
             self.master_win.show()
             self.close()

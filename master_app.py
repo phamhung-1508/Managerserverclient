@@ -32,12 +32,12 @@ if not is_admin():
     except Exception:
         pass
 
-# 2. TỰ ĐỘNG MỞ PORT 9999 WINDOWS DEFENDER FIREWALL
+# 2. TỰ ĐỘNG MỞ PORT WINDOWS DEFENDER FIREWALL
 def setup_windows_firewall(port=9999):
     rule_name = "Mir4_Master_Socket_Server"
     try:
         chk_cmd = f'netsh advfirewall firewall show rule name="{rule_name}"'
-        startupinfo = subprocess.STARTINFO()
+        startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startupinfo.wShowWindow = subprocess.SW_HIDE
         res = subprocess.run(chk_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo)
@@ -49,20 +49,37 @@ def setup_windows_firewall(port=9999):
     except Exception:
         pass
 
-# 3. ĐĂNG KÝ ĐỊA CHỈ MÁY CHÍNH LÊN CLOUD ĐỂ MÁY CON TỰ TÌM
+# 3. ĐĂNG KÝ ĐỊA CHỈ MÁY CHÍNH LÊN CLOUD DWEET.IO
 def publish_master_address(account_name, port=9999):
     def worker():
         while True:
             try:
-                # Lấy IP Public thực tế của máy chính
-                pub_ip = urllib.request.urlopen('https://api.ipify.org', timeout=5).read().decode('utf8')
-                # Đẩy thông tin lên kênh Rendezvous theo tên tài khoản
-                url = f"https://kvdb.io/4y9o12qVzDmbV7wz9C3b2A/{account_name.lower()}"
-                req = urllib.request.Request(url, data=f"{pub_ip}:{port}".encode('utf-8'), method='POST')
+                # Lấy IP mạng LAN nội bộ
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                lan_ip = s.getsockname()[0]
+                s.close()
+            except Exception:
+                lan_ip = "127.0.0.1"
+
+            wan_ip = ""
+            try:
+                # Lấy IP Public Internet
+                req_ip = urllib.request.Request('https://api.ipify.org', headers={'User-Agent': 'Mozilla/5.0'})
+                wan_ip = urllib.request.urlopen(req_ip, timeout=5).read().decode('utf8').strip()
+            except Exception:
+                pass
+
+            try:
+                clean_user = account_name.strip().lower()
+                url = f"https://dweet.io/dweet/for/mir4_{clean_user}?lan_ip={lan_ip}&wan_ip={wan_ip}&port={port}"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
                 urllib.request.urlopen(req, timeout=5)
             except Exception:
                 pass
-            threading.Event().wait(30) # Gửi lại sau mỗi 30s
+
+            threading.Event().wait(15)
+
     t = threading.Thread(target=worker, daemon=True)
     t.start()
 
@@ -249,13 +266,10 @@ class MasterAppWindow(QMainWindow):
         self.signals.client_updated.connect(self.update_client_row)
         self.signals.client_disconnected.connect(self.mark_client_offline)
 
-        # Bật Server Socket
         self.server = MasterServer(self.username, self.signals)
         self.server.start()
 
-        # Đẩy địa chỉ máy chính lên Cloud Rendezvous để máy con tự nhận diện
         publish_master_address(self.username, SERVER_PORT)
-
         self.init_ui()
 
     def init_ui(self):
@@ -337,7 +351,7 @@ class MasterAppWindow(QMainWindow):
         """)
         layout.addWidget(self.table)
 
-        # THANH ĐIỀU KHIỂN
+        # KHUNG ĐIỀU KHIỂN HÀNG LOẠT
         ctrl_bar = QHBoxLayout()
 
         btn_style_green = "background-color: #2e7d32; color: #fff; font-weight: bold; padding: 8px 12px; border-radius: 4px;"

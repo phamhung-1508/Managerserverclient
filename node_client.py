@@ -10,9 +10,8 @@ import psutil
 import socket
 import threading
 import time
-import urllib.request
 
-# 1. TỰ NÂNG QUYỀN ADMINISTRATOR AN TOÀN (KHÔNG KẸT TIẾN TRÌNH)
+# 1. TỰ NÂNG QUYỀN ADMINISTRATOR AN TOÀN
 def run_as_admin():
     try:
         if ctypes.windll.shell32.IsUserAnAdmin():
@@ -95,7 +94,7 @@ def kill_process_by_path(target_path):
     except Exception:
         pass
 
-# ==================== LUỒNG KẾT NỐI TƯƠNG THÍCH MÁY CHÍNH (DWEET.IO) ====================
+# ==================== LUỒNG KẾT NỐI SOCKET TCP ====================
 
 class ClientSignals(QObject):
     remote_command_received = pyqtSignal(str)
@@ -108,124 +107,79 @@ class ClientNetworkThread(threading.Thread):
         self.signals = signals
         self.running = True
 
-    def resolve_master_address(self, account_name):
-        """Khớp chính xác với hàm publish_master_address của máy chính"""
-        try:
-            clean_user = account_name.strip().lower()
-            url = f"https://dweet.io/get/latest/dweet/for/mir4_{clean_user}"
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-            res = urllib.request.urlopen(req, timeout=5).read().decode('utf-8')
-            data = json.loads(res)
-            
-            if data.get("this") == "succeeded":
-                items = data.get("with", [])
-                if items:
-                    content = items[0].get("content", {})
-                    lan_ip = content.get("lan_ip")
-                    wan_ip = content.get("wan_ip")
-                    port = int(content.get("port", 9999))
-                    return lan_ip, wan_ip, port
-        except Exception:
-            pass
-        return None, None, None
-
     def run(self):
         while self.running:
             cfg = self.main_app.config
             is_active = cfg.get("is_connected", False)
+            master_host = cfg.get("master_host", "").strip()
+            master_port = int(cfg.get("master_port", 9999))
             master_user = cfg.get("master_user", "").strip().lower()
             node_name = cfg.get("node_name", socket.gethostname()).strip()
 
-            if not is_active or not master_user:
+            if not is_active or not master_host or not master_user:
                 self.signals.connection_status_changed.emit("Chưa liên kết. Vui lòng bấm [LƯU VÀ KẾT NỐI]", "#888888")
                 time.sleep(2)
                 continue
 
-            self.signals.connection_status_changed.emit(f"Đang tìm máy chính [{master_user}]...", "#00e5ff")
-            lan_ip, wan_ip, master_port = self.resolve_master_address(master_user)
-
-            if not lan_ip and not wan_ip:
-                self.signals.connection_status_changed.emit(f"Không tìm thấy máy chính [{master_user}] Online", "#ffaa00")
-                time.sleep(5)
-                continue
-
             sock = None
-            connected = False
-            
-            # Thử kết nối LAN trước, nếu khác mạng sẽ tự động chuyển sang WAN Internet
-            for target_ip in [lan_ip, wan_ip]:
-                if not target_ip:
-                    continue
-                try:
-                    self.signals.connection_status_changed.emit(f"Đang kết nối tới {target_ip}:{master_port}...", "#00e5ff")
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(4.0)
-                    sock.connect((target_ip, master_port))
-                    sock.settimeout(None)
-                    connected = True
-                    break
-                except Exception:
-                    if sock:
+            try:
+                self.signals.connection_status_changed.emit(f"Đang kết nối tới {master_host}:{master_port}...", "#00e5ff")
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5.0)
+                sock.connect((master_host, master_port))
+                sock.settimeout(None)
+
+                self.signals.connection_status_changed.emit(f"🟢 ĐÃ LIÊN KẾT: {master_user}", "#00e676")
+
+                def receive_worker(s):
+                    buf = ""
+                    while self.running:
                         try:
-                            sock.close()
+                            data = s.recv(1024).decode('utf-8')
+                            if not data:
+                                break
+                            buf += data
+                            while "\n" in buf:
+                                line, buf = buf.split("\n", 1)
+                                if line.strip():
+                                    cmd_obj = json.loads(line)
+                                    cmd = cmd_obj.get("command", "")
+                                    if cmd:
+                                        self.signals.remote_command_received.emit(cmd)
                         except Exception:
-                            pass
-                    sock = None
-
-            if not connected or sock is None:
-                self.signals.connection_status_changed.emit("🔴 MẤT KẾT NỐI (Đang thử lại sau 5s)", "#ff5252")
-                time.sleep(5)
-                continue
-
-            self.signals.connection_status_changed.emit(f"🟢 ĐÃ LIÊN KẾT: {master_user}", "#00e676")
-
-            def receive_worker(s):
-                buf = ""
-                while self.running:
-                    try:
-                        data = s.recv(1024).decode('utf-8')
-                        if not data:
                             break
-                        buf += data
-                        while "\n" in buf:
-                            line, buf = buf.split("\n", 1)
-                            if line.strip():
-                                cmd_obj = json.loads(line)
-                                cmd = cmd_obj.get("command", "")
-                                if cmd:
-                                    self.signals.remote_command_received.emit(cmd)
+
+                rcv_thread = threading.Thread(target=receive_worker, args=(sock,), daemon=True)
+                rcv_thread.start()
+
+                while self.running and rcv_thread.is_alive():
+                    if not self.main_app.config.get("is_connected", False):
+                        break
+                    qt_on = is_process_running_by_path(self.main_app.config.get("qt_path", ""))
+                    tinker_on = is_process_running_by_path(self.main_app.config.get("tinker_path", ""))
+
+                    payload = {
+                        "master_user": master_user,
+                        "node_name": node_name,
+                        "qt": qt_on,
+                        "tinker": tinker_on,
+                        "uptime": get_uptime_str()
+                    }
+                    try:
+                        sock.sendall((json.dumps(payload) + "\n").encode('utf-8'))
                     except Exception:
                         break
+                    time.sleep(3)
 
-            rcv_thread = threading.Thread(target=receive_worker, args=(sock,), daemon=True)
-            rcv_thread.start()
-
-            # Chu kỳ gửi gói tin định kỳ 3 giây tới máy chính
-            while self.running and rcv_thread.is_alive():
-                if not self.main_app.config.get("is_connected", False):
-                    break
-                qt_on = is_process_running_by_path(self.main_app.config.get("qt_path", ""))
-                tinker_on = is_process_running_by_path(self.main_app.config.get("tinker_path", ""))
-
-                payload = {
-                    "master_user": master_user,
-                    "node_name": node_name,
-                    "qt": qt_on,
-                    "tinker": tinker_on,
-                    "uptime": get_uptime_str()
-                }
-                try:
-                    sock.sendall((json.dumps(payload) + "\n").encode('utf-8'))
-                except Exception:
-                    break
-                time.sleep(3)
-
-            if sock:
-                try:
-                    sock.close()
-                except Exception:
-                    pass
-            time.sleep(5)
+            except Exception:
+                self.signals.connection_status_changed.emit(f"🔴 MẤT KẾT NỐI TỚI {master_host} (Thử lại sau 5s)", "#ff5252")
+            finally:
+                if sock:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+                time.sleep(5)
 
 # ==================== MODULE MIR4 WALL MANAGER ====================
 
@@ -373,7 +327,9 @@ class MasterApp(QMainWindow):
             "auto_start_apps": True,
             "auto_restart_crash": True,
             "delay_seconds": 2,
-            "master_user": "",
+            "master_host": "192.168.1.3",
+            "master_port": 9999,
+            "master_user": "11111",
             "node_name": socket.gethostname(),
             "is_connected": False
         }
@@ -428,7 +384,7 @@ class MasterApp(QMainWindow):
         tab_boot_layout.setContentsMargins(20, 15, 20, 15)
         tab_boot_layout.setSpacing(12)
 
-        # KHUNG KẾT NỐI MÁY CHÍNH QUA TÀI KHOẢN CLOUD
+        # KHUNG KẾT NỐI MÁY CHÍNH
         net_box = QFrame()
         net_box.setStyleSheet("background-color: #17171d; border: 2px solid #ff6600; border-radius: 8px;")
         net_box_layout = QVBoxLayout(net_box)
@@ -436,7 +392,7 @@ class MasterApp(QMainWindow):
         net_box_layout.setSpacing(10)
 
         h_net_title = QHBoxLayout()
-        lbl_net = QLabel("📡 KẾT NỐI MÁY CHÍNH (KHÔNG CẦN CHUNG MẠNG LAN):")
+        lbl_net = QLabel("📡 KẾT NỐI MÁY CHÍNH:")
         lbl_net.setStyleSheet("border: none; font-weight: bold; color: #ff944d; font-size: 13px;")
         h_net_title.addWidget(lbl_net)
 
@@ -447,20 +403,30 @@ class MasterApp(QMainWindow):
         net_box_layout.addLayout(h_net_title)
 
         h_net_inputs = QHBoxLayout()
-        h_net_inputs.setSpacing(12)
+        h_net_inputs.setSpacing(10)
 
+        # 1. IP Máy chính
+        h_net_inputs.addWidget(QLabel("IP Máy Chính:"))
+        self.txt_master_host = QLineEdit(self.config.get("master_host", "192.168.1.3"))
+        self.txt_master_host.setPlaceholderText("VD: 192.168.1.3")
+        self.txt_master_host.setStyleSheet("background-color: #242429; color: #ffffff; border: 1px solid #555; border-radius: 4px; padding: 6px;")
+        h_net_inputs.addWidget(self.txt_master_host)
+
+        # 2. Tài khoản quản trị
         h_net_inputs.addWidget(QLabel("Tài Khoản Quản Trị:"))
-        self.txt_master_user = QLineEdit(self.config.get("master_user", ""))
-        self.txt_master_user.setPlaceholderText("VD: mir4hung01")
+        self.txt_master_user = QLineEdit(self.config.get("master_user", "11111"))
+        self.txt_master_user.setPlaceholderText("VD: 11111")
         self.txt_master_user.setStyleSheet("background-color: #242429; color: #00e676; font-weight: bold; border: 1px solid #555; border-radius: 4px; padding: 6px;")
         h_net_inputs.addWidget(self.txt_master_user)
 
+        # 3. Tên máy con
         h_net_inputs.addWidget(QLabel("Tên Máy Con:"))
         self.txt_node_name = QLineEdit(self.config.get("node_name", socket.gethostname()))
-        self.txt_node_name.setPlaceholderText("VD: PCHUNG002")
+        self.txt_node_name.setPlaceholderText("VD: PCCHINH01")
         self.txt_node_name.setStyleSheet("background-color: #242429; color: #00e5ff; font-weight: bold; border: 1px solid #555; border-radius: 4px; padding: 6px;")
         h_net_inputs.addWidget(self.txt_node_name)
 
+        # Nút Lưu và Kết nối
         self.btn_save_connect = QPushButton("💾 LƯU VÀ KẾT NỐI")
         self.btn_save_connect.setFixedHeight(34)
         self.btn_save_connect.setStyleSheet("""
@@ -730,17 +696,19 @@ class MasterApp(QMainWindow):
     # ================= CÁC HÀM XỬ LÝ SỰ KIỆN =================
 
     def on_save_and_connect_clicked(self):
+        host = self.txt_master_host.text().strip()
         user = self.txt_master_user.text().strip().lower()
         node = self.txt_node_name.text().strip()
-        if not user or not node:
-            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập đầy đủ Tài khoản máy chính và Tên máy con!")
+        if not host or not user or not node:
+            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng nhập IP Máy Chính, Tài khoản và Tên máy con!")
             return
 
+        self.config["master_host"] = host
         self.config["master_user"] = user
         self.config["node_name"] = node
         self.config["is_connected"] = True
         self.save_settings()
-        QMessageBox.information(self, "Đã lưu", f"Đã lưu thông tin cấu hình!\nHệ thống đang tự động tìm kiếm máy chính [{user}] qua Cloud...")
+        QMessageBox.information(self, "Đã lưu", f"Đã lưu cấu hình!\nĐang tiến hành kết nối tới {host}:9999...")
 
     def on_net_status_change(self, text, color):
         self.lbl_net_status.setText(text)
@@ -912,6 +880,7 @@ class MasterApp(QMainWindow):
             self.config["tinker_path"] = self.txt_tinker.text().strip()
             self.config["auto_start_apps"] = self.chk_auto_launch_tools.isChecked()
             self.config["auto_restart_crash"] = self.chk_auto_restart.isChecked()
+            self.config["master_host"] = self.txt_master_host.text().strip()
             self.config["master_user"] = self.txt_master_user.text().strip().lower()
             self.config["node_name"] = self.txt_node_name.text().strip()
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:

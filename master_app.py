@@ -8,9 +8,10 @@ import hashlib
 import winreg
 import subprocess
 import ctypes
+import urllib.request
 from datetime import datetime
 
-# 1. TỰ ĐỘNG NÂNG QUYỀN ADMINISTRATOR ĐỂ THIẾT LẬP FIREWALL
+# 1. TỰ ĐỘNG NÂNG QUYỀN ADMINISTRATOR
 def is_admin():
     try:
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
@@ -31,28 +32,39 @@ if not is_admin():
     except Exception:
         pass
 
-# 2. HÀM TỰ ĐỘNG THIẾT LẬP WINDOWS DEFENDER FIREWALL (PORT 9999)
+# 2. TỰ ĐỘNG MỞ PORT 9999 WINDOWS DEFENDER FIREWALL
 def setup_windows_firewall(port=9999):
     rule_name = "Mir4_Master_Socket_Server"
     try:
-        # Kiểm tra xem rule đã tồn tại chưa bằng netsh (nhanh, nhẹ, không mở màn hình đen cmd)
         chk_cmd = f'netsh advfirewall firewall show rule name="{rule_name}"'
-        startupinfo = subprocess.STARTUPINFO()
+        startupinfo = subprocess.STARTINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startupinfo.wShowWindow = subprocess.SW_HIDE
-
         res = subprocess.run(chk_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo)
-        
-        # Nếu chưa có rule, tự động thêm cả Inbound và Outbound
         if res.returncode != 0 or rule_name.lower() not in res.stdout.decode('latin1', errors='ignore').lower():
-            # Thêm chiều Vào (Inbound)
             in_cmd = f'netsh advfirewall firewall add rule name="{rule_name}" dir=in action=allow protocol=TCP localport={port}'
-            subprocess.run(in_cmd, shell=True, startupinfo=startupinfo)
-            # Thêm chiều Ra (Outbound)
             out_cmd = f'netsh advfirewall firewall add rule name="{rule_name}" dir=out action=allow protocol=TCP localport={port}'
+            subprocess.run(in_cmd, shell=True, startupinfo=startupinfo)
             subprocess.run(out_cmd, shell=True, startupinfo=startupinfo)
-    except Exception as e:
-        print(f"Lỗi cấu hình firewall tự động: {e}")
+    except Exception:
+        pass
+
+# 3. ĐĂNG KÝ ĐỊA CHỈ MÁY CHÍNH LÊN CLOUD ĐỂ MÁY CON TỰ TÌM
+def publish_master_address(account_name, port=9999):
+    def worker():
+        while True:
+            try:
+                # Lấy IP Public thực tế của máy chính
+                pub_ip = urllib.request.urlopen('https://api.ipify.org', timeout=5).read().decode('utf8')
+                # Đẩy thông tin lên kênh Rendezvous theo tên tài khoản
+                url = f"https://kvdb.io/4y9o12qVzDmbV7wz9C3b2A/{account_name.lower()}"
+                req = urllib.request.Request(url, data=f"{pub_ip}:{port}".encode('utf-8'), method='POST')
+                urllib.request.urlopen(req, timeout=5)
+            except Exception:
+                pass
+            threading.Event().wait(30) # Gửi lại sau mỗi 30s
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -237,8 +249,12 @@ class MasterAppWindow(QMainWindow):
         self.signals.client_updated.connect(self.update_client_row)
         self.signals.client_disconnected.connect(self.mark_client_offline)
 
+        # Bật Server Socket
         self.server = MasterServer(self.username, self.signals)
         self.server.start()
+
+        # Đẩy địa chỉ máy chính lên Cloud Rendezvous để máy con tự nhận diện
+        publish_master_address(self.username, SERVER_PORT)
 
         self.init_ui()
 
@@ -267,7 +283,7 @@ class MasterAppWindow(QMainWindow):
         ad_title.setStyleSheet("color: #000000;")
         ad_title.setAlignment(Qt.AlignCenter)
         
-        ad_sub = QLabel("Hỗ trợ đồng bộ đa máy con, tự động kích hoạt QT + TINKER Robot | Zalo: 0392771558")
+        ad_sub = QLabel("Hỗ trợ đồng bộ đa máy con qua Internet | Zalo Support: 0392771558")
         ad_sub.setFont(QFont("Segoe UI", 9, QFont.DemiBold))
         ad_sub.setStyleSheet("color: #111111;")
         ad_sub.setAlignment(Qt.AlignCenter)
@@ -278,7 +294,7 @@ class MasterAppWindow(QMainWindow):
 
         # THANH THÔNG TIN VÀ KHỞI ĐỘNG CÙNG WINDOWS
         top_bar = QHBoxLayout()
-        user_lbl = QLabel(f"Tài khoản quản trị: <b><font color='#00e676'>{self.username}</font></b> | Tường lửa Socket: <b><font color='#ffd700'>PORT {SERVER_PORT} [ĐÃ MỞ]</font></b>")
+        user_lbl = QLabel(f"Tài khoản quản trị: <b><font color='#00e676'>{self.username}</font></b> | Cloud Sync: <b><font color='#ffd700'>SẴN SÀNG TOÀN CẦU</font></b>")
         user_lbl.setFont(QFont("Segoe UI", 10))
         top_bar.addWidget(user_lbl)
 
@@ -321,7 +337,7 @@ class MasterAppWindow(QMainWindow):
         """)
         layout.addWidget(self.table)
 
-        # KHUNG ĐIỀU KHIỂN HÀNG LOẠT
+        # THANH ĐIỀU KHIỂN
         ctrl_bar = QHBoxLayout()
 
         btn_style_green = "background-color: #2e7d32; color: #fff; font-weight: bold; padding: 8px 12px; border-radius: 4px;"
@@ -368,29 +384,19 @@ class MasterAppWindow(QMainWindow):
 
         menu = QMenu(self)
         menu.setStyleSheet("""
-            QMenu {
-                background-color: #24242c;
-                color: #ffffff;
-                border: 1px solid #444;
-                font-weight: bold;
-            }
-            QMenu::item:selected {
-                background-color: #c62828;
-                color: #ffffff;
-            }
+            QMenu { background-color: #24242c; color: #ffffff; border: 1px solid #444; font-weight: bold; }
+            QMenu::item:selected { background-color: #c62828; color: #ffffff; }
         """)
 
         action_delete = QAction(f"🗑️ XÓA {len(selected_rows)} MÁY ĐÃ CHỌN", self)
         action_delete.triggered.connect(self.delete_selected_rows)
         menu.addAction(action_delete)
-
         menu.exec_(self.table.viewport().mapToGlobal(pos))
 
     def delete_selected_rows(self):
         selected_rows = self.table.selectionModel().selectedRows()
         if not selected_rows:
             return
-
         reply = QMessageBox.question(
             self, 'Xác nhận xóa',
             f"Bạn có chắc muốn xóa {len(selected_rows)} máy con khỏi bảng hiển thị?",
@@ -453,4 +459,98 @@ class MasterAppWindow(QMainWindow):
     def execute_on_selected(self, command_str):
         selected_nodes = self.get_selected_node_names()
         if not selected_nodes:
-            QMessageBox
+            QMessageBox.warning(self, "Chưa chọn máy", "Vui lòng chọn ít nhất 1 máy con!")
+            return
+
+        if command_str == "REBOOT":
+            reply = QMessageBox.question(
+                self, 'Xác nhận',
+                f"Bạn có chắc muốn Reboot {len(selected_nodes)} máy đã chọn?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        success_count = 0
+        for name in selected_nodes:
+            if self.server.send_command(name, command_str):
+                success_count += 1
+
+        QMessageBox.information(self, "Thông báo", f"Đã gửi lệnh [{command_str}] tới {success_count}/{len(selected_nodes)} máy đang Online.")
+
+    def on_toggle_autostart(self, state):
+        enable = state == Qt.Checked
+        if set_autostart(enable):
+            status = "đã bật" if enable else "đã tắt"
+            QMessageBox.information(self, "Thông báo", f"Tự khởi động cùng Windows {status} thành công!")
+        else:
+            QMessageBox.warning(self, "Lỗi", "Không thể cập nhật cấu hình khởi động!")
+
+class LoginWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
+
+    def init_ui(self):
+        self.setWindowTitle("Đăng Nhập Quản Trị Mir4")
+        self.resize(360, 320)
+        self.setStyleSheet("background-color: #121214; color: #ffffff; font-family: 'Segoe UI';")
+
+        if os.path.exists("app_icon.ico"):
+            self.setWindowIcon(QIcon("app_icon.ico"))
+
+        layout = QVBoxLayout(self)
+
+        title = QLabel("HỆ THỐNG QUẢN TRỊ MIR4")
+        title.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #d4af37; margin-bottom: 10px;")
+        layout.addWidget(title)
+
+        self.txt_user = QLineEdit()
+        self.txt_user.setPlaceholderText("Tài khoản máy chính")
+        self.txt_user.setStyleSheet("padding: 8px; border-radius: 4px; background: #24242c; color: #fff;")
+        layout.addWidget(self.txt_user)
+
+        self.txt_pass = QLineEdit()
+        self.txt_pass.setPlaceholderText("Mật khẩu")
+        self.txt_pass.setEchoMode(QLineEdit.Password)
+        self.txt_pass.setStyleSheet("padding: 8px; border-radius: 4px; background: #24242c; color: #fff;")
+        layout.addWidget(self.txt_pass)
+
+        self.btn_login = QPushButton("Đăng Nhập")
+        self.btn_login.setStyleSheet("background-color: #ff6600; color: #fff; font-weight: bold; padding: 10px; border-radius: 4px;")
+        self.btn_login.clicked.connect(self.handle_login)
+        layout.addWidget(self.btn_login)
+
+        self.btn_register = QPushButton("Tạo Tài Khoản Mới")
+        self.btn_register.setStyleSheet("background-color: #2b2b36; color: #fff; padding: 8px; border-radius: 4px;")
+        self.btn_register.clicked.connect(self.handle_register)
+        layout.addWidget(self.btn_register)
+
+    def handle_login(self):
+        u = self.txt_user.text().strip().lower()
+        p = self.txt_pass.text().strip()
+        if authenticate_user(u, p):
+            self.master_win = MasterAppWindow(u)
+            self.master_win.show()
+            self.close()
+        else:
+            QMessageBox.critical(self, "Thất bại", "Sai tài khoản hoặc mật khẩu!")
+
+    def handle_register(self):
+        u = self.txt_user.text().strip().lower()
+        p = self.txt_pass.text().strip()
+        ok, msg = register_user(u, p)
+        if ok:
+            QMessageBox.information(self, "Thành công", msg)
+        else:
+            QMessageBox.warning(self, "Lỗi", msg)
+
+if __name__ == "__main__":
+    setup_windows_firewall(SERVER_PORT)
+    init_db()
+    app = QApplication(sys.argv)
+    login = LoginWindow()
+    login.show()
+    sys.exit(app.exec_())

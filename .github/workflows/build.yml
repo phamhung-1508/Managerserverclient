@@ -27,10 +27,6 @@ jobs:
       run: |
         pyinstaller --noconfirm --onedir --windowed --name "Mir4_Master_Manager" --clean master_app.py
 
-    - name: Build Node Client EXE
-      run: |
-        pyinstaller --noconfirm --onefile --windowed --name "Mir4_Node_Agent" --clean node_client.py
-
     - name: Archive Master App
       shell: pwsh
       run: |
@@ -41,9 +37,3 @@ jobs:
       with:
         name: Mir4_Master_Manager_Windows
         path: dist/Mir4_Master_Manager.zip
-
-    - name: Upload Node Agent Build
-      uses: actions/upload-artifact@v4
-      with:
-        name: Mir4_Node_Agent_Windows
-        path: dist/Mir4_Node_Agent.exe

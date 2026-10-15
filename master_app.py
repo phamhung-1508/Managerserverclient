@@ -69,7 +69,7 @@ def get_machine_ips(ts_client=None):
         wan_ip = urllib.request.urlopen(req, timeout=3).read().decode('utf8').strip()
     except Exception:
         pass
-    return lan_ip, _ip, wan_ip
+    return lan_ip, vpn_ip, wan_ip
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -260,7 +260,7 @@ class MasterAppWindow(QMainWindow):
 
         self.ts = EmbeddedTailscale()
         self.ts.start_and_connect()
-        self.lan_ip, self._ip, self.wan_ip = get_machine_ips(self.ts)
+        self.lan_ip, self.vpn_ip, self.wan_ip = get_machine_ips(self.ts)
         self.init_ui()
 
     def init_ui(self):
@@ -300,8 +300,8 @@ class MasterAppWindow(QMainWindow):
         # THANH THÔNG TIN IP
         top_bar = QHBoxLayout()
         ip_info = f"LAN: <font color='#00e676'><b>{self.lan_ip}</b></font>"
-        if self._ip:
-            ip_info += f" | VPN: <font color='#ffeb3b'><b>{self.vpn_ip}</b></font>"
+        if self.vpn_ip:
+            ip_info += f" | VPN TAILSCALE: <font color='#ffeb3b'><b>{self.vpn_ip}</b></font>"
         if self.wan_ip:
             ip_info += f" | WAN: <font color='#00e5ff'><b>{self.wan_ip}</b></font>"
 
@@ -371,12 +371,12 @@ class MasterAppWindow(QMainWindow):
         btn_qt_off.clicked.connect(lambda: self.execute_on_selected("STOP_QT"))
         ctrl_bar.addWidget(btn_qt_off)
 
-        btn_tk_on = QPushButton("▶ Bật TINKER OR KHÁC")
+        btn_tk_on = QPushButton("▶ Bật TINKER")
         btn_tk_on.setStyleSheet(btn_style_green)
         btn_tk_on.clicked.connect(lambda: self.execute_on_selected("START_TINKER"))
         ctrl_bar.addWidget(btn_tk_on)
 
-        btn_tk_off = QPushButton("■ Tắt Bật TINKER OR KHÁC")
+        btn_tk_off = QPushButton("■ Tắt TINKER")
         btn_tk_off.setStyleSheet(btn_style_red)
         btn_tk_off.clicked.connect(lambda: self.execute_on_selected("STOP_TINKER"))
         ctrl_bar.addWidget(btn_tk_off)

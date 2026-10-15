@@ -21,15 +21,26 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install PyQt5 pyinstaller psutil pywin32
+        pip install -r requirements.txt
+        python -c "import win32gui; print('pywin32 ready')"
 
     - name: Build Master App EXE
       run: |
-        pyinstaller --noconfirm --onedir --windowed --name "Mir4_Master_Manager" --icon "app_icon.ico" --add-data "app_icon.ico;." --clean master_app.py
+        pyinstaller --noconfirm --onedir --windowed --uac-admin `
+          --name "Mir4_Master_Manager" `
+          --icon "app_icon.ico" `
+          --add-data "app_icon.ico;." `
+          --add-binary "tailscale_bin/*;tailscale_bin" `
+          --clean master_app.py
 
     - name: Build Node Client EXE
       run: |
-        pyinstaller --noconfirm --onefile --windowed --name "Mir4_Node_Agent" --icon "app_icon.ico" --add-data "app_icon.ico;." --clean node_client.py
+        pyinstaller --noconfirm --onefile --windowed --uac-admin `
+          --name "Mir4_Node_Agent" `
+          --icon "app_icon.ico" `
+          --add-data "app_icon.ico;." `
+          --add-binary "tailscale_bin/*;tailscale_bin" `
+          --clean node_client.py
 
     - name: Archive Master App
       shell: pwsh

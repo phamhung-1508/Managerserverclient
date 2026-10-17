@@ -21,7 +21,7 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install PyQt5==5.15.10 pyinstaller psutil pywin32 pypiwin32
+        pip install PyQt5==5.15.10 psutil>=5.9.8 pywin32>=306 pyinstaller>=6.5.0
         python -c "import win32gui; print('pywin32 ready')"
 
     - name: Download and Extract Tailscale Binaries
@@ -51,7 +51,7 @@ jobs:
         if (Test-Path "app_icon.ico") {
           $iconArg = '--icon "app_icon.ico" --add-data "app_icon.ico;."'
         }
-        $cmd = "pyinstaller --noconfirm --onedir --windowed --uac-admin --name `"Mir4_Master_Manager`" $iconArg --add-binary `"tailscale_bin/*;tailscale_bin`" --clean master_app.py"
+        $cmd = "pyinstaller --noconfirm --onedir --windowed --uac-admin --name `"Mir4_Master_Manager`" $iconArg --collect-all pywin32 --add-binary `"tailscale_bin/*;tailscale_bin`" --clean master_app.py"
         Invoke-Expression $cmd
 
     - name: Build Node Client EXE
@@ -61,7 +61,7 @@ jobs:
         if (Test-Path "app_icon.ico") {
           $iconArg = '--icon "app_icon.ico" --add-data "app_icon.ico;."'
         }
-        $cmd = "pyinstaller --noconfirm --onefile --windowed --uac-admin --name `"Mir4_Node_Agent`" $iconArg --add-binary `"tailscale_bin/*;tailscale_bin`" --clean node_client.py"
+        $cmd = "pyinstaller --noconfirm --onefile --windowed --uac-admin --name `"Mir4_Node_Agent`" $iconArg --collect-all pywin32 --add-binary `"tailscale_bin/*;tailscale_bin`" --clean node_client.py"
         Invoke-Expression $cmd
 
     - name: Archive Master App

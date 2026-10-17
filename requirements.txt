@@ -1,5 +1,4 @@
 PyQt5==5.15.10
 psutil>=5.9.8
 pywin32>=306
-pypiwin32>=223
 pyinstaller>=6.5.0

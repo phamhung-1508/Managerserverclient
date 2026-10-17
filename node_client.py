@@ -67,7 +67,6 @@ def get_uptime_str():
         return "N/A"
 
 def get_pids_by_path(target_path):
-    """Tìm tất cả PID khớp với đường dẫn hoặc tên file thực thi."""
     if not target_path or not os.path.exists(target_path):
         return []
     target_name = os.path.basename(target_path).lower()
@@ -93,7 +92,6 @@ def is_process_running_by_path(target_path):
     return len(get_pids_by_path(target_path)) > 0
 
 def get_visible_window_count_by_pids(pids):
-    """Đếm số cửa sổ hợp lệ đang hiển thị của danh sách PIDs."""
     if not pids:
         return 0
     pids_set = set(pids)
@@ -107,7 +105,6 @@ def get_visible_window_count_by_pids(pids):
                     rect = win32gui.GetWindowRect(hwnd)
                     w = rect[2] - rect[0]
                     h = rect[3] - rect[1]
-                    # Loại bỏ các cửa sổ rác, worker ngầm hoặc tooltip kích thước nhỏ
                     if w > 100 and h > 60:
                         valid_hwnds.append(hwnd)
         except Exception:
@@ -121,12 +118,6 @@ def get_visible_window_count_by_pids(pids):
     return len(valid_hwnds)
 
 def get_tool_status_by_path(target_path):
-    """
-    Phân tích trạng thái thực tế của Tool qua Win32 API:
-    - OFF: Tiến trình không chạy.
-    - ĐÃ CHẠY-CHỜ ĐĂNG NHẬP: Có từ 2 cửa sổ trở lên (bị kẹt ở bảng đăng nhập + popup hết hạn/lỗi).
-    - ON: Chỉ có 1 cửa sổ chính duy nhất đang chạy.
-    """
     pids = get_pids_by_path(target_path)
     if not pids:
         return "OFF"
@@ -147,7 +138,6 @@ def kill_process_by_path(target_path):
     except Exception:
         pass
 
-# ==================== QUẢN LÝ TASK SCHEDULER (BYPASS UAC) ====================
 def set_task_scheduler_autostart(enable=True):
     startupinfo = subprocess.STARTUPINFO()
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
@@ -234,15 +224,14 @@ class ClientNetworkThread(threading.Thread):
                     if not self.main_app.config.get("is_connected", False):
                         break
                     
-                    # Quét trạng thái cửa sổ thực tế của QT và Tinker
                     qt_status = get_tool_status_by_path(self.main_app.config.get("qt_path", ""))
                     tinker_status = get_tool_status_by_path(self.main_app.config.get("tinker_path", ""))
 
                     payload = {
                         "master_user": master_user,
                         "node_name": node_name,
-                        "qt": qt_status,            # Truyền chuỗi trạng thái: ON | OFF | ĐÃ CHẠY-CHỜ ĐĂNG NHẬP
-                        "tinker": tinker_status,    # Truyền chuỗi trạng thái: ON | OFF | ĐÃ CHẠY-CHỜ ĐĂNG NHẬP
+                        "qt": qt_status,
+                        "tinker": tinker_status,
                         "uptime": get_uptime_str()
                     }
                     try:
@@ -318,16 +307,7 @@ class ThumbnailCard(QFrame):
         self.current_pixmap = None
 
         self.setFrameShape(QFrame.StyledPanel)
-        self.setStyleSheet("""
-            ThumbnailCard {
-                background-color: #000000;
-                border: 2px solid #38383e;
-                border-radius: 4px;
-            }
-            ThumbnailCard:hover {
-                border: 2px solid #ff7b00;
-            }
-        """)
+        self.setStyleSheet("ThumbnailCard { background-color: #000000; border: 2px solid #38383e; border-radius: 4px; } ThumbnailCard:hover { border: 2px solid #ff7b00; }")
 
     def set_card_size(self, width, height):
         self.target_w = width
@@ -375,24 +355,17 @@ class MasterApp(QMainWindow):
         super().__init__()
         self.setWindowTitle("Mir4 Client Node - Auto Launcher & Wall Manager [PHAMHUNG]")
         self.resize(1340, 880)
-        self.setStyleSheet("""
-            QMainWindow { background-color: #121214; }
-            QWidget { color: #ececed; font-family: Segoe UI, sans-serif; }
-            QTabWidget::pane { border: 1px solid #2e2e38; background-color: #121214; }
-            QTabBar::tab {
-                background: #1a1a1e; color: #888; font-weight: bold; font-size: 13px;
-                padding: 10px 25px; border-top-left-radius: 6px; border-top-right-radius: 6px;
-                margin-right: 4px;
-            }
-            QTabBar::tab:selected { background: #ff6600; color: white; }
-            QMessageBox { background-color: #1e1e24; }
-            QMessageBox QLabel { color: #ffffff; font-size: 13px; font-weight: bold; }
-            QMessageBox QPushButton { 
-                background-color: #ff6600; color: white; font-weight: bold; 
-                min-width: 80px; height: 28px; border-radius: 4px; 
-            }
-            QMessageBox QPushButton:hover { background-color: #ff8533; }
-        """)
+        self.setStyleSheet(
+            "QMainWindow { background-color: #121214; }"
+            "QWidget { color: #ececed; font-family: Segoe UI, sans-serif; }"
+            "QTabWidget::pane { border: 1px solid #2e2e38; background-color: #121214; }"
+            "QTabBar::tab { background: #1a1a1e; color: #888; font-weight: bold; font-size: 13px; padding: 10px 25px; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 4px; }"
+            "QTabBar::tab:selected { background: #ff6600; color: white; }"
+            "QMessageBox { background-color: #1e1e24; }"
+            "QMessageBox QLabel { color: #ffffff; font-size: 13px; font-weight: bold; }"
+            "QMessageBox QPushButton { background-color: #ff6600; color: white; font-weight: bold; min-width: 80px; height: 28px; border-radius: 4px; }"
+            "QMessageBox QPushButton:hover { background-color: #ff8533; }"
+        )
 
         if os.path.exists("app_icon.ico"):
             self.setWindowIcon(QIcon("app_icon.ico"))
@@ -411,7 +384,6 @@ class MasterApp(QMainWindow):
         }
         self.load_config()
 
-        # TỰ ĐỘNG CHẠY TAILSCALE NGẦM TRÊN MÁY CON
         self.ts = EmbeddedTailscale()
         threading.Thread(target=self.ts.start_and_connect, daemon=True).start()
 
@@ -485,34 +457,27 @@ class MasterApp(QMainWindow):
         h_net_inputs = QHBoxLayout()
         h_net_inputs.setSpacing(10)
 
-        # 1. IP Máy chính
         h_net_inputs.addWidget(QLabel("IP Máy Chính (VPN):"))
         self.txt_master_host = QLineEdit(self.config.get("master_host", ""))
         self.txt_master_host.setPlaceholderText("VD: 100.x.y.z")
         self.txt_master_host.setStyleSheet("background-color: #242429; color: #ffffff; border: 1px solid #555; border-radius: 4px; padding: 6px;")
         h_net_inputs.addWidget(self.txt_master_host)
 
-        # 2. Tài khoản quản trị
         h_net_inputs.addWidget(QLabel("Tài Khoản Quản Trị:"))
         self.txt_master_user = QLineEdit(self.config.get("master_user", ""))
         self.txt_master_user.setPlaceholderText("VD: admin")
         self.txt_master_user.setStyleSheet("background-color: #242429; color: #00e676; font-weight: bold; border: 1px solid #555; border-radius: 4px; padding: 6px;")
         h_net_inputs.addWidget(self.txt_master_user)
 
-        # 3. Tên máy con
         h_net_inputs.addWidget(QLabel("Tên Máy Con:"))
         self.txt_node_name = QLineEdit(self.config.get("node_name", socket.gethostname()))
         self.txt_node_name.setPlaceholderText("VD: PC01")
         self.txt_node_name.setStyleSheet("background-color: #242429; color: #00e5ff; font-weight: bold; border: 1px solid #555; border-radius: 4px; padding: 6px;")
         h_net_inputs.addWidget(self.txt_node_name)
 
-        # Nút Lưu và Kết nối
         self.btn_save_connect = QPushButton("💾 LƯU VÀ KẾT NỐI")
         self.btn_save_connect.setFixedHeight(34)
-        self.btn_save_connect.setStyleSheet("""
-            QPushButton { background-color: #2e7d32; color: #ffffff; font-weight: bold; padding: 0 16px; border-radius: 4px; }
-            QPushButton:hover { background-color: #388e3c; }
-        """)
+        self.btn_save_connect.setStyleSheet("QPushButton { background-color: #2e7d32; color: #ffffff; font-weight: bold; padding: 0 16px; border-radius: 4px; } QPushButton:hover { background-color: #388e3c; }")
         self.btn_save_connect.clicked.connect(self.on_save_and_connect_clicked)
         h_net_inputs.addWidget(self.btn_save_connect)
 
@@ -618,13 +583,7 @@ class MasterApp(QMainWindow):
 
         self.btn_launch_both = QPushButton("🚀 KHỞI CHẠY CẢ 2 PHẦN MỀM (QT TRƯỚC 30S)")
         self.btn_launch_both.setFixedHeight(45)
-        self.btn_launch_both.setStyleSheet("""
-            QPushButton {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff6600, stop:1 #ff8533);
-                color: white; font-size: 14px; font-weight: bold; border-radius: 6px;
-            }
-            QPushButton:hover { background: #ff944d; }
-        """)
+        self.btn_launch_both.setStyleSheet("QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff6600, stop:1 #ff8533); color: white; font-size: 14px; font-weight: bold; border-radius: 6px; } QPushButton:hover { background: #ff944d; }")
         self.btn_launch_both.clicked.connect(self.on_manual_launch_both)
         tab_boot_layout.addWidget(self.btn_launch_both)
 
@@ -647,13 +606,7 @@ class MasterApp(QMainWindow):
 
         self.refresh_btn = QPushButton("Làm mới ngay (F5)")
         self.refresh_btn.setFixedHeight(32)
-        self.refresh_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ff6600; color: white; font-weight: bold;
-                padding: 0 16px; border-radius: 4px;
-            }
-            QPushButton:hover { background-color: #ff8533; }
-        """)
+        self.refresh_btn.setStyleSheet("QPushButton { background-color: #ff6600; color: white; font-weight: bold; padding: 0 16px; border-radius: 4px; } QPushButton:hover { background-color: #ff8533; }")
         self.refresh_btn.clicked.connect(self.scan_windows)
         toolbar.addWidget(self.refresh_btn)
 
@@ -690,14 +643,7 @@ class MasterApp(QMainWindow):
         self.fps_slider.setRange(0, 60)
         self.fps_slider.setValue(30)
         self.fps_slider.setFixedWidth(160)
-        self.fps_slider.setStyleSheet("""
-            QSlider::groove:horizontal { height: 6px; background: #2b2b36; border-radius: 3px; }
-            QSlider::sub-page:horizontal { background: #ff6600; border-radius: 3px; }
-            QSlider::handle:horizontal {
-                background: #ffffff; border: 2px solid #ff6600; width: 14px;
-                margin-top: -5px; margin-bottom: -5px; border-radius: 7px;
-            }
-        """)
+        self.fps_slider.setStyleSheet("QSlider::groove:horizontal { height: 6px; background: #2b2b36; border-radius: 3px; } QSlider::sub-page:horizontal { background: #ff6600; border-radius: 3px; } QSlider::handle:horizontal { background: #ffffff; border: 2px solid #ff6600; width: 14px; margin-top: -5px; margin-bottom: -5px; border-radius: 7px; }")
         self.fps_slider.valueChanged.connect(self.on_fps_slider_changed)
         toolbar.addWidget(self.fps_slider)
 
@@ -729,15 +675,10 @@ class MasterApp(QMainWindow):
         self.tabs.addTab(tab_wall, "🖥️ BỨC TƯỜNG GAME (MIR4 WALL)")
         main_layout.addWidget(self.tabs, 1)
 
-        # BANNER BẢN QUYỀN (GIỮ NGUYÊN NỘI DUNG CŨ + BỔ SUNG QUẢNG CÁO MỚI)
+        # BANNER BẢN QUYỀN
         self.ad_banner = QFrame()
         self.ad_banner.setFixedHeight(82)
-        self.ad_banner.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #18090a, stop:0.5 #200f12, stop:1 #18090a);
-                border: 2px solid #ff2a2a; border-radius: 8px;
-            }
-        """)
+        self.ad_banner.setStyleSheet("QFrame { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #18090a, stop:0.5 #200f12, stop:1 #18090a); border: 2px solid #ff2a2a; border-radius: 8px; }")
         ad_layout = QHBoxLayout(self.ad_banner)
         ad_layout.setContentsMargins(20, 5, 20, 5)
 
@@ -757,7 +698,6 @@ class MasterApp(QMainWindow):
         lbl_fb.setStyleSheet("border: none; background: transparent; font-size: 13px; font-weight: bold; color: #ff5252;")
         contact_layout.addWidget(lbl_fb)
 
-        # QUẢNG CÁO MỚI BỔ SUNG
         lbl_extra_ad = QLabel("Mua QT + TINKER liên hệ : <span style='color: #00e676; font-weight: bold;'>ZL : 0392771558</span>")
         lbl_extra_ad.setStyleSheet("border: none; background: transparent; font-size: 12px; font-weight: bold; color: #ffea00;")
         contact_layout.addWidget(lbl_extra_ad)
@@ -767,14 +707,7 @@ class MasterApp(QMainWindow):
 
         gold_badge = QLabel("BUY / SELL GOLD MIR4")
         gold_badge.setFixedHeight(46)
-        gold_badge.setStyleSheet("""
-            QLabel {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #801010, stop:1 #d32f2f);
-                color: #ffeb3b; font-size: 16px; font-weight: 900;
-                padding: 0 25px; border: 2px solid #ffe600; border-radius: 6px;
-                letter-spacing: 1px;
-            }
-        """)
+        gold_badge.setStyleSheet("QLabel { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #801010, stop:1 #d32f2f); color: #ffeb3b; font-size: 16px; font-weight: 900; padding: 0 25px; border: 2px solid #ffe600; border-radius: 6px; letter-spacing: 1px; }")
         ad_layout.addWidget(gold_badge)
         main_layout.addWidget(self.ad_banner)
 
@@ -1116,8 +1049,6 @@ class MasterApp(QMainWindow):
         if not self.chk_auto_restart.isChecked():
             return
 
-        # Chỉ tự động bật lại nếu tiến trình hoàn toàn tắt ("OFF"). 
-        # Nếu đang ở "ĐÃ CHẠY-CHỜ ĐĂNG NHẬP", tiến trình vẫn tồn tại nên không spawn trùng lặp.
         if qt_path and os.path.exists(qt_path) and qt_status == "OFF":
             self.status_boot_label.setText("Phát hiện QT bị tắt! Đang tự động bật lại...")
             self.execute_binary(qt_path)
@@ -1131,7 +1062,6 @@ class MasterApp(QMainWindow):
         if set_task_scheduler_autostart(enable):
             status = "kích hoạt" if enable else "tắt"
             self.status_boot_label.setText(f"Đã {status} tự khởi động Hub cùng Windows (Bypass UAC).")
-            # Dọn dẹp file .bat cũ ở thư mục Startup nếu còn sót lại từ phiên bản trước
             old_bat = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup\Mir4_Master_Hub.bat")
             if os.path.exists(old_bat):
                 try:

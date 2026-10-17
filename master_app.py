@@ -452,4 +452,227 @@ class MasterAppWindow(QMainWindow):
         menu = QMenu(self)
         menu.setStyleSheet("""
             QMenu { background-color: #24242c; color: #ffffff; border: 1px solid #444; font-weight: bold; }
-            QMenu::item:selected { background-color: #c6282
+            QMenu::item:selected { background-color: #c62828; color: #ffffff; }
+        """)
+
+        action_delete = QAction(f"🗑️ XÓA {len(selected_rows)} MÁY ĐÃ CHỌN", self)
+        action_delete.triggered.connect(self.delete_selected_rows)
+        menu.addAction(action_delete)
+        menu.exec_(self.table.viewport().mapToGlobal(pos))
+
+    def delete_selected_rows(self):
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            return
+        reply = QMessageBox.question(
+            self, 'Xác nhận xóa',
+            f"Bạn có chắc muốn xóa {len(selected_rows)} máy con khỏi bảng hiển thị?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            rows = sorted([index.row() for index in selected_rows], reverse=True)
+            for r in rows:
+                self.table.removeRow(r)
+
+    def find_row_by_node_name(self, node_name):
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            if item and item.text().strip().lower() == node_name.strip().lower():
+                return r
+        return -1
+
+    def update_client_row(self, data):
+        node_name = data["node_name"]
+        row = self.find_row_by_node_name(node_name)
+        if row == -1:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+        self.table.setItem(row, 0, QTableWidgetItem(node_name))
+        self.table.setItem(row, 1, QTableWidgetItem(data["ip"]))
+        
+        status_item = QTableWidgetItem(data["status"])
+        status_item.setForeground(QColor("#00e676"))
+        status_item.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        self.table.setItem(row, 2, status_item)
+
+        # Định dạng màu cho QT: Xanh lá (ON), Đỏ (OFF), Vàng cam (ĐÃ CHẠY-CHỜ ĐĂNG NHẬP)
+        qt_status = data["qt_status"]
+        qt_item = QTableWidgetItem(qt_status)
+        if qt_status == "ON":
+            qt_item.setForeground(QColor("#00e676"))
+        elif qt_status == "ĐÃ CHẠY-CHỜ ĐĂNG NHẬP":
+            qt_item.setForeground(QColor("#ffb300"))
+        else:
+            qt_item.setForeground(QColor("#ff5252"))
+        qt_item.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        self.table.setItem(row, 3, qt_item)
+
+        # Định dạng màu cho TINKER: Xanh lá (ON), Đỏ (OFF), Vàng cam (ĐÃ CHẠY-CHỜ ĐĂNG NHẬP)
+        tinker_status = data["tinker_status"]
+        tinker_item = QTableWidgetItem(tinker_status)
+        if tinker_status == "ON":
+            tinker_item.setForeground(QColor("#00e676"))
+        elif tinker_status == "ĐÃ CHẠY-CHỜ ĐĂNG NHẬP":
+            tinker_item.setForeground(QColor("#ffb300"))
+        else:
+            tinker_item.setForeground(QColor("#ff5252"))
+        tinker_item.setFont(QFont("Segoe UI", 9, QFont.Bold))
+        self.table.setItem(row, 4, tinker_item)
+
+        self.table.setItem(row, 5, QTableWidgetItem(data["uptime"]))
+
+    def mark_client_offline(self, node_name):
+        row = self.find_row_by_node_name(node_name)
+        if row != -1:
+            status_item = QTableWidgetItem("OFFLINE")
+            status_item.setForeground(QColor("#ff5252"))
+            status_item.setFont(QFont("Segoe UI", 9, QFont.Bold))
+            self.table.setItem(row, 2, status_item)
+
+    def get_selected_node_names(self):
+        selected_indexes = self.table.selectionModel().selectedRows()
+        node_names = []
+        for index in selected_indexes:
+            item = self.table.item(index.row(), 0)
+            if item:
+                node_names.append(item.text().strip())
+        return node_names
+
+    def execute_on_selected(self, command_str):
+        selected_nodes = self.get_selected_node_names()
+        if not selected_nodes:
+            QMessageBox.warning(self, "Chưa chọn máy", "Vui lòng chọn ít nhất 1 máy con!")
+            return
+
+        if command_str == "REBOOT":
+            reply = QMessageBox.question(
+                self, 'Xác nhận',
+                f"Bạn có chắc muốn Reboot {len(selected_nodes)} máy đã chọn?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        success_count = 0
+        for name in selected_nodes:
+            if self.server.send_command(name, command_str):
+                success_count += 1
+
+        QMessageBox.information(self, "Thông báo", f"Đã gửi lệnh [{command_str}] tới {success_count}/{len(selected_nodes)} máy đang Online.")
+
+    def on_toggle_autostart(self, state):
+        enable = state == Qt.Checked
+        if set_autostart(enable):
+            status = "đã bật" if enable else "đã tắt"
+            QMessageBox.information(self, "Thông báo", f"Tự khởi động cùng Windows (Bypass UAC) {status} thành công!")
+        else:
+            QMessageBox.warning(self, "Lỗi", "Không thể cập nhật cấu hình khởi động!")
+
+class LoginWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.pref_path = os.path.join(get_app_dir(), PREF_FILE)
+        self.init_ui()
+        self.load_remembered_credentials()
+
+    def init_ui(self):
+        self.setWindowTitle("Đăng Nhập Quản Trị Mir4")
+        self.resize(360, 360)
+        self.setStyleSheet("background-color: #121214; color: #ffffff; font-family: 'Segoe UI';")
+
+        if os.path.exists("app_icon.ico"):
+            self.setWindowIcon(QIcon("app_icon.ico"))
+
+        layout = QVBoxLayout(self)
+
+        title = QLabel("HỆ THỐNG QUẢN TRỊ MIR4")
+        title.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #d4af37; margin-bottom: 10px;")
+        layout.addWidget(title)
+
+        self.txt_user = QLineEdit()
+        self.txt_user.setPlaceholderText("Tài khoản máy chính")
+        self.txt_user.setStyleSheet("padding: 8px; border-radius: 4px; background: #24242c; color: #fff;")
+        layout.addWidget(self.txt_user)
+
+        self.txt_pass = QLineEdit()
+        self.txt_pass.setPlaceholderText("Mật khẩu")
+        self.txt_pass.setEchoMode(QLineEdit.Password)
+        self.txt_pass.setStyleSheet("padding: 8px; border-radius: 4px; background: #24242c; color: #fff;")
+        layout.addWidget(self.txt_pass)
+
+        # TÍNH NĂNG GHI NHỚ TÀI KHOẢN
+        self.chk_remember = QCheckBox("Ghi nhớ tài khoản cho lần sau")
+        self.chk_remember.setStyleSheet("color: #00e5ff; font-weight: bold; margin-top: 4px;")
+        layout.addWidget(self.chk_remember)
+
+        self.btn_login = QPushButton("Đăng Nhập")
+        self.btn_login.setStyleSheet("background-color: #ff6600; color: #fff; font-weight: bold; padding: 10px; border-radius: 4px; margin-top: 6px;")
+        self.btn_login.clicked.connect(self.handle_login)
+        layout.addWidget(self.btn_login)
+
+        self.btn_register = QPushButton("Tạo Tài Khoản Mới")
+        self.btn_register.setStyleSheet("background-color: #2b2b36; color: #fff; padding: 8px; border-radius: 4px;")
+        self.btn_register.clicked.connect(self.handle_register)
+        layout.addWidget(self.btn_register)
+
+    def load_remembered_credentials(self):
+        if os.path.exists(self.pref_path):
+            try:
+                with open(self.pref_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if data.get("remember", False):
+                        self.txt_user.setText(data.get("username", ""))
+                        self.txt_pass.setText(data.get("password", ""))
+                        self.chk_remember.setChecked(True)
+            except Exception:
+                pass
+
+    def save_credentials(self, username, password, remember):
+        try:
+            if remember:
+                payload = {
+                    "remember": True,
+                    "username": username,
+                    "password": password
+                }
+            else:
+                payload = {
+                    "remember": False,
+                    "username": "",
+                    "password": ""
+                }
+            with open(self.pref_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=4)
+        except Exception:
+            pass
+
+    def handle_login(self):
+        u = self.txt_user.text().strip().lower()
+        p = self.txt_pass.text().strip()
+        if authenticate_user(u, p):
+            self.save_credentials(u, p, self.chk_remember.isChecked())
+            self.master_win = MasterAppWindow(u)
+            self.master_win.show()
+            self.close()
+        else:
+            QMessageBox.critical(self, "Thất bại", "Sai tài khoản hoặc mật khẩu!")
+
+    def handle_register(self):
+        u = self.txt_user.text().strip().lower()
+        p = self.txt_pass.text().strip()
+        ok, msg = register_user(u, p)
+        if ok:
+            QMessageBox.information(self, "Thành công", msg)
+        else:
+            QMessageBox.warning(self, "Lỗi", msg)
+
+if __name__ == "__main__":
+    setup_windows_firewall(SERVER_PORT)
+    init_db()
+    app = QApplication(sys.argv)
+    login = LoginWindow()
+    login.show()
+    sys.exit(app.exec_())

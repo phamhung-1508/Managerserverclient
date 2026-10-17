@@ -32,6 +32,7 @@ run_as_admin()
 import win32gui
 import win32ui
 import win32con
+import win32process
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -48,7 +49,7 @@ def get_app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 CONFIG_FILE = os.path.join(get_app_dir(), "boot_config.json")
-REG_APP_NAME = "Mir4_Master_Hub_PhamHung"
+TASK_SCHEDULER_NAME = "Mir4_Client_Node_AutoStart"
 
 def get_current_exe_path():
     if getattr(sys, 'frozen', False):
@@ -65,25 +66,77 @@ def get_uptime_str():
     except Exception:
         return "N/A"
 
-def is_process_running_by_path(target_path):
+def get_pids_by_path(target_path):
+    """Tìm tất cả PID khớp với đường dẫn hoặc tên file thực thi."""
     if not target_path or not os.path.exists(target_path):
-        return False
+        return []
     target_name = os.path.basename(target_path).lower()
     target_abs = os.path.abspath(target_path).lower()
+    pids = []
     try:
-        for proc in psutil.process_iter(['name', 'exe']):
+        for proc in psutil.process_iter(['pid', 'name', 'exe']):
             try:
                 p_exe = proc.info.get('exe')
                 if p_exe and os.path.abspath(p_exe).lower() == target_abs:
-                    return True
+                    pids.append(proc.info['pid'])
+                    continue
                 p_name = proc.info.get('name')
                 if p_name and p_name.lower() == target_name:
-                    return True
+                    pids.append(proc.info['pid'])
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
     except Exception:
         pass
-    return False
+    return pids
+
+def is_process_running_by_path(target_path):
+    return len(get_pids_by_path(target_path)) > 0
+
+def get_visible_window_count_by_pids(pids):
+    """Đếm số cửa sổ hợp lệ đang hiển thị của danh sách PIDs."""
+    if not pids:
+        return 0
+    pids_set = set(pids)
+    valid_hwnds = []
+
+    def enum_cb(hwnd, extra):
+        try:
+            if win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd):
+                _, win_pid = win32process.GetWindowThreadProcessId(hwnd)
+                if win_pid in pids_set:
+                    rect = win32gui.GetWindowRect(hwnd)
+                    w = rect[2] - rect[0]
+                    h = rect[3] - rect[1]
+                    # Loại bỏ các cửa sổ rác, worker ngầm hoặc tooltip kích thước nhỏ
+                    if w > 100 and h > 60:
+                        valid_hwnds.append(hwnd)
+        except Exception:
+            pass
+        return True
+
+    try:
+        win32gui.EnumWindows(enum_cb, None)
+    except Exception:
+        pass
+    return len(valid_hwnds)
+
+def get_tool_status_by_path(target_path):
+    """
+    Phân tích trạng thái thực tế của Tool qua Win32 API:
+    - OFF: Tiến trình không chạy.
+    - ĐÃ CHẠY-CHỜ ĐĂNG NHẬP: Có từ 2 cửa sổ trở lên (bị kẹt ở bảng đăng nhập + popup hết hạn/lỗi).
+    - ON: Chỉ có 1 cửa sổ chính duy nhất đang chạy.
+    """
+    pids = get_pids_by_path(target_path)
+    if not pids:
+        return "OFF"
+    
+    count = get_visible_window_count_by_pids(pids)
+    if count >= 2:
+        return "ĐÃ CHẠY-CHỜ ĐĂNG NHẬP"
+    elif count == 1:
+        return "ON"
+    return "ON"
 
 def kill_process_by_path(target_path):
     if not target_path:
@@ -93,6 +146,33 @@ def kill_process_by_path(target_path):
         subprocess.run(f'taskkill /F /IM "{target_name}" /T', shell=True, capture_output=True)
     except Exception:
         pass
+
+# ==================== QUẢN LÝ TASK SCHEDULER (BYPASS UAC) ====================
+def set_task_scheduler_autostart(enable=True):
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+
+    if enable:
+        exe_path = get_current_exe_path()
+        cmd = f'schtasks /create /tn "{TASK_SCHEDULER_NAME}" /tr "\"{exe_path}\"" /sc onlogon /rl highest /f'
+        res = subprocess.run(cmd, shell=True, startupinfo=startupinfo)
+        return res.returncode == 0
+    else:
+        cmd = f'schtasks /delete /tn "{TASK_SCHEDULER_NAME}" /f'
+        res = subprocess.run(cmd, shell=True, startupinfo=startupinfo)
+        return res.returncode == 0
+
+def is_task_scheduler_autostart_enabled():
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        chk_cmd = f'schtasks /query /tn "{TASK_SCHEDULER_NAME}"'
+        res = subprocess.run(chk_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo)
+        return res.returncode == 0
+    except Exception:
+        return False
 
 class ClientSignals(QObject):
     remote_command_received = pyqtSignal(str)
@@ -137,7 +217,7 @@ class ClientNetworkThread(threading.Thread):
                             if not data:
                                 break
                             buf += data
-                            while "\n" in buffer:
+                            while "\n" in buf:
                                 line, buf = buf.split("\n", 1)
                                 if line.strip():
                                     cmd_obj = json.loads(line)
@@ -153,14 +233,16 @@ class ClientNetworkThread(threading.Thread):
                 while self.running and rcv_thread.is_alive():
                     if not self.main_app.config.get("is_connected", False):
                         break
-                    qt_on = is_process_running_by_path(self.main_app.config.get("qt_path", ""))
-                    tinker_on = is_process_running_by_path(self.main_app.config.get("tinker_path", ""))
+                    
+                    # Quét trạng thái cửa sổ thực tế của QT và Tinker
+                    qt_status = get_tool_status_by_path(self.main_app.config.get("qt_path", ""))
+                    tinker_status = get_tool_status_by_path(self.main_app.config.get("tinker_path", ""))
 
                     payload = {
                         "master_user": master_user,
                         "node_name": node_name,
-                        "qt": qt_on,
-                        "tinker": tinker_on,
+                        "qt": qt_status,            # Truyền chuỗi trạng thái: ON | OFF | ĐÃ CHẠY-CHỜ ĐĂNG NHẬP
+                        "tinker": tinker_status,    # Truyền chuỗi trạng thái: ON | OFF | ĐÃ CHẠY-CHỜ ĐĂNG NHẬP
                         "uptime": get_uptime_str()
                     }
                     try:
@@ -513,9 +595,9 @@ class MasterApp(QMainWindow):
         opts_layout.setSpacing(8)
 
         h_opts1 = QHBoxLayout()
-        self.chk_windows_startup = QCheckBox("Tự khởi động toàn bộ Hub cùng Windows")
-        self.chk_windows_startup.setChecked(self.is_startup_enabled())
-        self.chk_windows_startup.setStyleSheet("color: #ffffff; font-weight: bold; font-size: 13px;")
+        self.chk_windows_startup = QCheckBox("Tự khởi động toàn bộ Hub cùng Windows (Bypass UAC)")
+        self.chk_windows_startup.setChecked(is_task_scheduler_autostart_enabled())
+        self.chk_windows_startup.setStyleSheet("color: #00e676; font-weight: bold; font-size: 13px;")
         self.chk_windows_startup.stateChanged.connect(self.toggle_startup)
         h_opts1.addWidget(self.chk_windows_startup)
 
@@ -647,9 +729,9 @@ class MasterApp(QMainWindow):
         self.tabs.addTab(tab_wall, "🖥️ BỨC TƯỜNG GAME (MIR4 WALL)")
         main_layout.addWidget(self.tabs, 1)
 
-        # BANNER BẢN QUYỀN
+        # BANNER BẢN QUYỀN (GIỮ NGUYÊN NỘI DUNG CŨ + BỔ SUNG QUẢNG CÁO MỚI)
         self.ad_banner = QFrame()
-        self.ad_banner.setFixedHeight(72)
+        self.ad_banner.setFixedHeight(82)
         self.ad_banner.setStyleSheet("""
             QFrame {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #18090a, stop:0.5 #200f12, stop:1 #18090a);
@@ -674,6 +756,11 @@ class MasterApp(QMainWindow):
         lbl_fb = QLabel("FB : <span style='color: #ffffff; font-weight: bold;'>Phạm Văn Hưng</span>")
         lbl_fb.setStyleSheet("border: none; background: transparent; font-size: 13px; font-weight: bold; color: #ff5252;")
         contact_layout.addWidget(lbl_fb)
+
+        # QUẢNG CÁO MỚI BỔ SUNG
+        lbl_extra_ad = QLabel("Mua QT + TINKER liên hệ : <span style='color: #00e676; font-weight: bold;'>ZL : 0392771558</span>")
+        lbl_extra_ad.setStyleSheet("border: none; background: transparent; font-size: 12px; font-weight: bold; color: #ffea00;")
+        contact_layout.addWidget(lbl_extra_ad)
 
         ad_layout.addLayout(contact_layout)
         ad_layout.addStretch()
@@ -996,66 +1083,63 @@ class MasterApp(QMainWindow):
         QTimer.singleShot(30000, start_tinker)
 
     def check_app_status_ui(self):
-        qt_running = is_process_running_by_path(self.txt_qt.text().strip())
-        if qt_running:
+        qt_status = get_tool_status_by_path(self.txt_qt.text().strip())
+        if qt_status == "ON":
             self.status_qt_badge.setText("🟢 ĐANG CHẠY (ONLINE)")
             self.status_qt_badge.setStyleSheet("border: none; font-size: 11px; font-weight: bold; color: #00e676;")
+        elif qt_status == "ĐÃ CHẠY-CHỜ ĐĂNG NHẬP":
+            self.status_qt_badge.setText("🟠 ĐÃ CHẠY-CHỜ ĐĂNG NHẬP")
+            self.status_qt_badge.setStyleSheet("border: none; font-size: 11px; font-weight: bold; color: #ffb300;")
         else:
             self.status_qt_badge.setText("🔴 ĐÃ DỪNG (OFFLINE)")
             self.status_qt_badge.setStyleSheet("border: none; font-size: 11px; font-weight: bold; color: #ff5252;")
 
-        tinker_running = is_process_running_by_path(self.txt_tinker.text().strip())
-        if tinker_running:
+        tinker_status = get_tool_status_by_path(self.txt_tinker.text().strip())
+        if tinker_status == "ON":
             self.status_tinker_badge.setText("🟢 ĐANG CHẠY (ONLINE)")
             self.status_tinker_badge.setStyleSheet("border: none; font-size: 11px; font-weight: bold; color: #00e676;")
+        elif tinker_status == "ĐÃ CHẠY-CHỜ ĐĂNG NHẬP":
+            self.status_tinker_badge.setText("🟠 ĐÃ CHẠY-CHỜ ĐĂNG NHẬP")
+            self.status_tinker_badge.setStyleSheet("border: none; font-size: 11px; font-weight: bold; color: #ffb300;")
         else:
             self.status_tinker_badge.setText("🔴 ĐÃ DỪNG (OFFLINE)")
             self.status_tinker_badge.setStyleSheet("border: none; font-size: 11px; font-weight: bold; color: #ff5252;")
 
-        return qt_running, tinker_running
+        return qt_status, tinker_status
 
     def check_and_recover_apps(self):
         qt_path = self.txt_qt.text().strip()
         tinker_path = self.txt_tinker.text().strip()
 
-        qt_on, tinker_on = self.check_app_status_ui()
+        qt_status, tinker_status = self.check_app_status_ui()
 
         if not self.chk_auto_restart.isChecked():
             return
 
-        if qt_path and os.path.exists(qt_path) and not qt_on:
+        # Chỉ tự động bật lại nếu tiến trình hoàn toàn tắt ("OFF"). 
+        # Nếu đang ở "ĐÃ CHẠY-CHỜ ĐĂNG NHẬP", tiến trình vẫn tồn tại nên không spawn trùng lặp.
+        if qt_path and os.path.exists(qt_path) and qt_status == "OFF":
             self.status_boot_label.setText("Phát hiện QT bị tắt! Đang tự động bật lại...")
             self.execute_binary(qt_path)
 
-        if tinker_path and os.path.exists(tinker_path) and not tinker_on:
+        if tinker_path and os.path.exists(tinker_path) and tinker_status == "OFF":
             self.status_boot_label.setText("Phát hiện TINKER bị tắt! Đang tự động bật lại...")
             self.execute_binary(tinker_path)
 
-    def get_startup_shortcut_path(self):
-        startup_dir = os.path.join(os.environ["APPDATA"], r"Microsoft\Windows\Start Menu\Programs\Startup")
-        return os.path.join(startup_dir, "Mir4_Master_Hub.bat")
-
-    def is_startup_enabled(self):
-        return os.path.exists(self.get_startup_shortcut_path())
-
     def toggle_startup(self, state):
-        exe_path = get_current_exe_path()
-        bat_file = self.get_startup_shortcut_path()
-
-        if state == Qt.Checked:
-            try:
-                with open(bat_file, "w", encoding="utf-8") as f:
-                    f.write(f'@echo off\nstart "" "{exe_path}"\n')
-            except Exception:
-                pass
-            self.status_boot_label.setText("Đã kích hoạt tự khởi động Hub cùng Windows.")
-        else:
-            if os.path.exists(bat_file):
+        enable = (state == Qt.Checked)
+        if set_task_scheduler_autostart(enable):
+            status = "kích hoạt" if enable else "tắt"
+            self.status_boot_label.setText(f"Đã {status} tự khởi động Hub cùng Windows (Bypass UAC).")
+            # Dọn dẹp file .bat cũ ở thư mục Startup nếu còn sót lại từ phiên bản trước
+            old_bat = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs\Startup\Mir4_Master_Hub.bat")
+            if os.path.exists(old_bat):
                 try:
-                    os.remove(bat_file)
+                    os.remove(old_bat)
                 except Exception:
                     pass
-            self.status_boot_label.setText("Đã tắt tự khởi động Hub cùng Windows.")
+        else:
+            self.status_boot_label.setText("Lỗi cấu hình khởi động Task Scheduler!")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

@@ -83,6 +83,7 @@ from PyQt5.QtGui import QFont, QColor, QIcon
 SERVER_PORT = 9999
 DB_NAME = "master_users.db"
 APP_NAME = "Mir4MasterManager"
+TASK_NAME = "Mir4MasterManager_AutoStart"
 PREF_FILE = "login_pref.json"
 
 def get_app_dir():
@@ -131,31 +132,66 @@ def authenticate_user(username, password):
     return bool(row and row[0] == hash_pw(password))
 
 def set_autostart(enable=True):
-    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    """
+    Sử dụng Windows Task Scheduler với quyền HIGHEST để vượt qua UAC,
+    đồng thời duy trì ghi vào Registry Run để tương thích hoàn toàn.
+    """
     try:
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+
         if enable:
-            exe_path = os.path.abspath(sys.argv[0])
+            if getattr(sys, 'frozen', False):
+                exe_path = sys.executable
+            else:
+                exe_path = os.path.abspath(sys.argv[0])
+
+            # Đăng ký Task Scheduler chạy quyền Administrator không hỏi Yes/No
+            create_cmd = f'schtasks /create /tn "{TASK_NAME}" /tr "\"{exe_path}\"" /sc onlogon /rl highest /f'
+            subprocess.run(create_cmd, shell=True, startupinfo=startupinfo)
+
+            # Đăng ký phụ trợ trong HKCU Run
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
             cmd = f'"{exe_path}"' if exe_path.endswith('.exe') else f'"{sys.executable}" "{exe_path}"'
             winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, cmd)
+            winreg.CloseKey(key)
         else:
+            # Xóa Task Scheduler
+            del_cmd = f'schtasks /delete /tn "{TASK_NAME}" /f'
+            subprocess.run(del_cmd, shell=True, startupinfo=startupinfo)
+
+            # Xóa trong Registry Run
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
             try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
                 winreg.DeleteValue(key, APP_NAME)
+                winreg.CloseKey(key)
             except FileNotFoundError:
                 pass
-        winreg.CloseKey(key)
         return True
     except Exception:
         return False
 
 def is_autostart_enabled():
-    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
     try:
+        # Kiểm tra trước trong Task Scheduler
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        chk_cmd = f'schtasks /query /tn "{TASK_NAME}"'
+        res = subprocess.run(chk_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo)
+        if res.returncode == 0:
+            return True
+
+        # Fallback kiểm tra Registry
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
         winreg.QueryValueEx(key, APP_NAME)
         winreg.CloseKey(key)
         return True
-    except FileNotFoundError:
+    except Exception:
         return False
 
 class MasterServerSignals(QObject):
@@ -215,12 +251,25 @@ class MasterServer(threading.Thread):
                     with self.lock:
                         self.active_sockets[client_id] = conn
 
+                    # Xử lý linh hoạt cả định dạng payload chuỗi mới ("ON", "OFF", "ĐÃ CHẠY-CHỜ ĐĂNG NHẬP") và boolean cũ
+                    qt_val = payload.get("qt", False)
+                    if isinstance(qt_val, str):
+                        qt_status = qt_val
+                    else:
+                        qt_status = "ON" if qt_val else "OFF"
+
+                    tinker_val = payload.get("tinker", False)
+                    if isinstance(tinker_val, str):
+                        tinker_status = tinker_val
+                    else:
+                        tinker_status = "ON" if tinker_val else "OFF"
+
                     node_data = {
                         "node_name": client_id,
                         "ip": addr[0],
                         "status": "ONLINE",
-                        "qt_status": "ON" if payload.get("qt", False) else "OFF",
-                        "tinker_status": "ON" if payload.get("tinker", False) else "OFF",
+                        "qt_status": qt_status,
+                        "tinker_status": tinker_status,
                         "uptime": payload.get("uptime", "N/A"),
                         "last_seen": datetime.now().strftime("%H:%M:%S")
                     }
@@ -265,7 +314,7 @@ class MasterAppWindow(QMainWindow):
 
     def init_ui(self):
         self.setWindowTitle(f"Mir4 Master Hub - [Tài khoản: {self.username}]")
-        self.resize(1150, 720)
+        self.resize(1180, 740)
         self.setStyleSheet("background-color: #121214; color: #ffffff;")
 
         if os.path.exists("app_icon.ico"):
@@ -275,7 +324,7 @@ class MasterAppWindow(QMainWindow):
         self.setCentralWidget(main_widget)
         layout = QVBoxLayout(main_widget)
 
-        # BANNER QUẢNG CÁO
+        # BANNER QUẢNG CÁO (GIỮ NGUYÊN QUẢNG CÁO CŨ, THÊM QUẢNG CÁO MỚI)
         ad_banner = QFrame()
         ad_banner.setStyleSheet("""
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #b8860b, stop:1 #d4af37);
@@ -292,9 +341,16 @@ class MasterAppWindow(QMainWindow):
         ad_sub.setFont(QFont("Segoe UI", 9, QFont.DemiBold))
         ad_sub.setStyleSheet("color: #111111;")
         ad_sub.setAlignment(Qt.AlignCenter)
+
+        # QUẢNG CÁO MỚI BỔ SUNG
+        ad_extra = QLabel("Mua QT + TINKER liên hệ : ZL : 0392771558")
+        ad_extra.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        ad_extra.setStyleSheet("color: #8b0000; margin-top: 2px;")
+        ad_extra.setAlignment(Qt.AlignCenter)
         
         ad_layout.addWidget(ad_title)
         ad_layout.addWidget(ad_sub)
+        ad_layout.addWidget(ad_extra)
         layout.addWidget(ad_banner)
 
         # THANH THÔNG TIN IP
@@ -311,7 +367,7 @@ class MasterAppWindow(QMainWindow):
 
         top_bar.addStretch()
 
-        self.cb_autostart = QCheckBox("Khởi động cùng Windows")
+        self.cb_autostart = QCheckBox("Khởi động cùng Windows (Bypass UAC)")
         self.cb_autostart.setChecked(is_autostart_enabled())
         self.cb_autostart.stateChanged.connect(self.on_toggle_autostart)
         self.cb_autostart.setStyleSheet("color: #00e676; font-weight: bold;")
@@ -396,211 +452,4 @@ class MasterAppWindow(QMainWindow):
         menu = QMenu(self)
         menu.setStyleSheet("""
             QMenu { background-color: #24242c; color: #ffffff; border: 1px solid #444; font-weight: bold; }
-            QMenu::item:selected { background-color: #c62828; color: #ffffff; }
-        """)
-
-        action_delete = QAction(f"🗑️ XÓA {len(selected_rows)} MÁY ĐÃ CHỌN", self)
-        action_delete.triggered.connect(self.delete_selected_rows)
-        menu.addAction(action_delete)
-        menu.exec_(self.table.viewport().mapToGlobal(pos))
-
-    def delete_selected_rows(self):
-        selected_rows = self.table.selectionModel().selectedRows()
-        if not selected_rows:
-            return
-        reply = QMessageBox.question(
-            self, 'Xác nhận xóa',
-            f"Bạn có chắc muốn xóa {len(selected_rows)} máy con khỏi bảng hiển thị?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-        )
-        if reply == QMessageBox.Yes:
-            rows = sorted([index.row() for index in selected_rows], reverse=True)
-            for r in rows:
-                self.table.removeRow(r)
-
-    def find_row_by_node_name(self, node_name):
-        for r in range(self.table.rowCount()):
-            item = self.table.item(r, 0)
-            if item and item.text().strip().lower() == node_name.strip().lower():
-                return r
-        return -1
-
-    def update_client_row(self, data):
-        node_name = data["node_name"]
-        row = self.find_row_by_node_name(node_name)
-        if row == -1:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-
-        self.table.setItem(row, 0, QTableWidgetItem(node_name))
-        self.table.setItem(row, 1, QTableWidgetItem(data["ip"]))
-        
-        status_item = QTableWidgetItem(data["status"])
-        status_item.setForeground(QColor("#00e676"))
-        status_item.setFont(QFont("Segoe UI", 9, QFont.Bold))
-        self.table.setItem(row, 2, status_item)
-
-        qt_item = QTableWidgetItem(data["qt_status"])
-        qt_item.setForeground(QColor("#00e676") if data["qt_status"] == "ON" else QColor("#ff5252"))
-        self.table.setItem(row, 3, qt_item)
-
-        tinker_item = QTableWidgetItem(data["tinker_status"])
-        tinker_item.setForeground(QColor("#00e676") if data["tinker_status"] == "ON" else QColor("#ff5252"))
-        self.table.setItem(row, 4, tinker_item)
-
-        self.table.setItem(row, 5, QTableWidgetItem(data["uptime"]))
-
-    def mark_client_offline(self, node_name):
-        row = self.find_row_by_node_name(node_name)
-        if row != -1:
-            status_item = QTableWidgetItem("OFFLINE")
-            status_item.setForeground(QColor("#ff5252"))
-            status_item.setFont(QFont("Segoe UI", 9, QFont.Bold))
-            self.table.setItem(row, 2, status_item)
-
-    def get_selected_node_names(self):
-        selected_indexes = self.table.selectionModel().selectedRows()
-        node_names = []
-        for index in selected_indexes:
-            item = self.table.item(index.row(), 0)
-            if item:
-                node_names.append(item.text().strip())
-        return node_names
-
-    def execute_on_selected(self, command_str):
-        selected_nodes = self.get_selected_node_names()
-        if not selected_nodes:
-            QMessageBox.warning(self, "Chưa chọn máy", "Vui lòng chọn ít nhất 1 máy con!")
-            return
-
-        if command_str == "REBOOT":
-            reply = QMessageBox.question(
-                self, 'Xác nhận',
-                f"Bạn có chắc muốn Reboot {len(selected_nodes)} máy đã chọn?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
-            )
-            if reply != QMessageBox.Yes:
-                return
-
-        success_count = 0
-        for name in selected_nodes:
-            if self.server.send_command(name, command_str):
-                success_count += 1
-
-        QMessageBox.information(self, "Thông báo", f"Đã gửi lệnh [{command_str}] tới {success_count}/{len(selected_nodes)} máy đang Online.")
-
-    def on_toggle_autostart(self, state):
-        enable = state == Qt.Checked
-        if set_autostart(enable):
-            status = "đã bật" if enable else "đã tắt"
-            QMessageBox.information(self, "Thông báo", f"Tự khởi động cùng Windows {status} thành công!")
-        else:
-            QMessageBox.warning(self, "Lỗi", "Không thể cập nhật cấu hình khởi động!")
-
-class LoginWindow(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.pref_path = os.path.join(get_app_dir(), PREF_FILE)
-        self.init_ui()
-        self.load_remembered_credentials()
-
-    def init_ui(self):
-        self.setWindowTitle("Đăng Nhập Quản Trị Mir4")
-        self.resize(360, 360)
-        self.setStyleSheet("background-color: #121214; color: #ffffff; font-family: 'Segoe UI';")
-
-        if os.path.exists("app_icon.ico"):
-            self.setWindowIcon(QIcon("app_icon.ico"))
-
-        layout = QVBoxLayout(self)
-
-        title = QLabel("HỆ THỐNG QUẢN TRỊ MIR4")
-        title.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("color: #d4af37; margin-bottom: 10px;")
-        layout.addWidget(title)
-
-        self.txt_user = QLineEdit()
-        self.txt_user.setPlaceholderText("Tài khoản máy chính")
-        self.txt_user.setStyleSheet("padding: 8px; border-radius: 4px; background: #24242c; color: #fff;")
-        layout.addWidget(self.txt_user)
-
-        self.txt_pass = QLineEdit()
-        self.txt_pass.setPlaceholderText("Mật khẩu")
-        self.txt_pass.setEchoMode(QLineEdit.Password)
-        self.txt_pass.setStyleSheet("padding: 8px; border-radius: 4px; background: #24242c; color: #fff;")
-        layout.addWidget(self.txt_pass)
-
-        # TÍNH NĂNG GHI NHỚ TÀI KHOẢN
-        self.chk_remember = QCheckBox("Ghi nhớ tài khoản cho lần sau")
-        self.chk_remember.setStyleSheet("color: #00e5ff; font-weight: bold; margin-top: 4px;")
-        layout.addWidget(self.chk_remember)
-
-        self.btn_login = QPushButton("Đăng Nhập")
-        self.btn_login.setStyleSheet("background-color: #ff6600; color: #fff; font-weight: bold; padding: 10px; border-radius: 4px; margin-top: 6px;")
-        self.btn_login.clicked.connect(self.handle_login)
-        layout.addWidget(self.btn_login)
-
-        self.btn_register = QPushButton("Tạo Tài Khoản Mới")
-        self.btn_register.setStyleSheet("background-color: #2b2b36; color: #fff; padding: 8px; border-radius: 4px;")
-        self.btn_register.clicked.connect(self.handle_register)
-        layout.addWidget(self.btn_register)
-
-    def load_remembered_credentials(self):
-        if os.path.exists(self.pref_path):
-            try:
-                with open(self.pref_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if data.get("remember", False):
-                        self.txt_user.setText(data.get("username", ""))
-                        self.txt_pass.setText(data.get("password", ""))
-                        self.chk_remember.setChecked(True)
-            except Exception:
-                pass
-
-    def save_credentials(self, username, password, remember):
-        try:
-            if remember:
-                payload = {
-                    "remember": True,
-                    "username": username,
-                    "password": password
-                }
-            else:
-                payload = {
-                    "remember": False,
-                    "username": "",
-                    "password": ""
-                }
-            with open(self.pref_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=4)
-        except Exception:
-            pass
-
-    def handle_login(self):
-        u = self.txt_user.text().strip().lower()
-        p = self.txt_pass.text().strip()
-        if authenticate_user(u, p):
-            self.save_credentials(u, p, self.chk_remember.isChecked())
-            self.master_win = MasterAppWindow(u)
-            self.master_win.show()
-            self.close()
-        else:
-            QMessageBox.critical(self, "Thất bại", "Sai tài khoản hoặc mật khẩu!")
-
-    def handle_register(self):
-        u = self.txt_user.text().strip().lower()
-        p = self.txt_pass.text().strip()
-        ok, msg = register_user(u, p)
-        if ok:
-            QMessageBox.information(self, "Thành công", msg)
-        else:
-            QMessageBox.warning(self, "Lỗi", msg)
-
-if __name__ == "__main__":
-    setup_windows_firewall(SERVER_PORT)
-    init_db()
-    app = QApplication(sys.argv)
-    login = LoginWindow()
-    login.show()
-    sys.exit(app.exec_())
+            QMenu::item:selected { background-color: #c6282
